@@ -1,0 +1,282 @@
+================================================================================
+        DATA STORAGE, INDEXING AND B+-TREES - IMPORTANT Q&A
+================================================================================
+
+
+================================================================================
+                            SECTION 1: DATA STORAGE
+================================================================================
+
+Q1: What is the difference between primary and secondary storage in a DBMS?
+
+- Primary storage (RAM): Fast, volatile, limited capacity. Used for active
+  data processing.
+- Secondary storage (Disk/SSD): Slower, non-volatile, large capacity. Used
+  for persistent database storage.
+- DBMS minimizes disk I/O because it's the dominant cost -- a single disk
+  seek is ~10ms vs ~10ns for RAM access (6 orders of magnitude).
+
+--------------------------------------------------------------------------------
+
+Q2: What is a disk block (page)? Why does it matter?
+
+A block/page is the smallest unit of data transfer between disk and memory
+(typically 4KB-16KB). DBMS reads/writes entire blocks, not individual records.
+Efficient storage means:
+- Packing related records into the same block
+- Minimizing the number of block transfers
+
+--------------------------------------------------------------------------------
+
+Q3: What are the different file organization methods?
+
+  Method              Description                           Best For
+  --------------------------------------------------------------------------
+  Heap file           Records inserted in any available     Bulk inserts,
+                      space                                 full scans
+
+  Sequential file     Records ordered by a search key       Range queries
+
+  Hash file           Records placed by hash function       Exact-match
+                      on key                                lookups
+
+  Clustered file      Related records from multiple         Join-heavy
+                      tables stored together                workloads
+
+--------------------------------------------------------------------------------
+
+Q4: What is the difference between fixed-length and variable-length records?
+
+- Fixed-length: Every record uses the same number of bytes. Simple to access
+  (record i is at offset i * record_size).
+
+- Variable-length: Records differ in size (due to VARCHAR, nullable fields,
+  repeating fields). Requires a slot directory at the end of each page
+  pointing to record offsets.
+
+--------------------------------------------------------------------------------
+
+Q5: What is a slotted page structure?
+
+A page layout where:
+- A header tracks the number of entries and free space pointer
+- A slot directory at the page end stores (offset, length) for each record
+- Records grow from one end, the directory from the other
+- Allows efficient deletion (compaction) and variable-length records
+
+
+================================================================================
+                            SECTION 2: INDEXING
+================================================================================
+
+Q6: What is an index and why is it needed?
+
+An index is a data structure that speeds up data retrieval without scanning the
+entire table. Without an index, a query on a 1M-row table requires a full scan.
+With an index, it may need only 3-4 disk accesses.
+
+--------------------------------------------------------------------------------
+
+Q7: What are the types of indices?
+
+- Ordered indices: Based on sorted order of values (e.g., B+-tree)
+- Hash indices: Based on a hash function mapping keys to buckets
+
+Further classification:
+- Primary (clustering) index: Index on the attribute by which the file is
+  physically ordered
+- Secondary (non-clustering) index: Index on any other attribute
+- Dense index: One entry for every record
+- Sparse index: One entry for every block (only works on ordered files)
+
+--------------------------------------------------------------------------------
+
+Q8: What is the difference between dense and sparse indices?
+
+                Dense                       Sparse
+  --------------------------------------------------------------------------
+  Entries       One per record              One per block
+  Space         More                        Less
+  Speed         Faster lookup               Slower (block scan after index)
+  Requirement   Works on any file           Requires file to be sorted on
+                                            search key
+
+--------------------------------------------------------------------------------
+
+Q9: What is a multilevel index?
+
+When a single-level index is too large to fit in memory, we build an index on
+the index -- creating multiple levels. This is essentially the idea behind
+B+-trees. If the outer index has b blocks, lookup takes ceil(log2(b)) accesses
+instead of scanning all b blocks.
+
+--------------------------------------------------------------------------------
+
+Q10: What is the difference between a primary and secondary index?
+
+- Primary index: Built on the ordering key of the file. Can be sparse.
+  Efficient for range queries.
+
+- Secondary index: Built on a non-ordering field. Must be dense. Each index
+  entry points to a record (or a bucket of pointers). Less efficient for
+  range queries but essential for queries on non-ordering attributes.
+
+
+================================================================================
+                          SECTION 3: B+-TREES
+================================================================================
+
+Q11: What is a B+-tree? Why is it the most widely used index structure?
+
+A B+-tree is a balanced, multi-way search tree where:
+- All data pointers are at leaf nodes
+- Leaf nodes are linked in a doubly linked list for range scans
+- The tree remains balanced after inserts/deletes (self-balancing)
+- Guarantees O(log_n N) search, insert, and delete
+
+It is preferred because it handles both equality and range queries efficiently
+and stays balanced without manual reorganization.
+
+--------------------------------------------------------------------------------
+
+Q12: What are the properties of a B+-tree of order n?
+
+Internal nodes:
+- At most n pointers (children) and n-1 keys
+- At least ceil(n/2) pointers (except root, which needs at least 2)
+
+Leaf nodes:
+- At most n-1 keys/data-pointers
+- At least ceil((n-1)/2) keys
+- Contain a sibling pointer to the next leaf
+
+Root:
+- At least 1 key (2 pointers) if it's an internal node
+
+--------------------------------------------------------------------------------
+
+Q13: How does search work in a B+-tree?
+
+  Search(node, key K):
+    If node is a leaf:
+      Scan keys; return record pointer if K found
+    Else (internal node):
+      Find i such that K_i <= K < K_(i+1)
+      Follow pointer P_i to child
+      Recurse
+
+  Cost = height of tree = ceil(log_ceil(n/2)(N)) where N is # of records.
+
+--------------------------------------------------------------------------------
+
+Q14: How does insertion work? Explain with splits.
+
+1. Find the correct leaf node
+2. If leaf has space -> insert key in sorted order
+3. If leaf is full -> split:
+   - Create a new leaf
+   - Distribute keys: first ceil(n/2) stay, rest go to new leaf
+   - COPY UP the smallest key of the new leaf to the parent
+4. If the parent is also full -> split the internal node:
+   - PUSH UP the middle key (not copied -- moved) to its parent
+5. Repeat up to the root; if root splits, tree height increases by 1
+
+Key distinction: Leaf splits COPY UP, internal node splits PUSH UP.
+
+--------------------------------------------------------------------------------
+
+Q15: How does deletion work?
+
+1. Find and remove the key from the leaf
+2. If the leaf still has >= ceil((n-1)/2) keys -> done
+3. If underflow:
+   - Try to borrow (redistribute) from a sibling
+   - If sibling can't lend -> merge the two leaves and remove a key from
+     the parent
+4. If parent underflows -> propagate merging upward
+5. If root has only one pointer left -> remove root, child becomes new root
+   (height decreases)
+
+--------------------------------------------------------------------------------
+
+Q16: Work through an example -- insert 5, 8, 1, 7, 3, 12, 9, 6 into a
+     B+-tree of order 3.
+
+Order 3 means: max 2 keys per node, min 1 key in leaves, min 2 children
+for internal nodes.
+
+  Insert 5:       [5]
+  Insert 8:       [5, 8]
+
+  Insert 1 (leaf full, split):
+          [5]
+         /   \
+      [1]    [5, 8]
+
+  Insert 7 into leaf [5, 8] -> overflow -> split:
+          [5,  7]
+         /   |    \
+      [1]  [5]   [7, 8]
+
+  Insert 3 into leaf [1] -> [1, 3] -- fits.
+
+  Insert 12 into [7, 8] -> overflow -> split [7,8,12]:
+    New leaves: [7] and [8, 12], copy 8 up.
+    Parent [5, 7] gets 8 -> overflow -> split internal node.
+    Tree grows in height.
+
+  (The exact tree depends on the split convention -- draw it out step by
+   step in exams.)
+
+--------------------------------------------------------------------------------
+
+Q17: What is the height of a B+-tree with N keys and order n?
+
+  Height <= ceil(log_ceil(n/2)(N))
+
+  Example: With n = 200 (typical for 4KB blocks) and N = 1,000,000:
+    Height <= ceil(log_100(1,000,000)) = ceil(3) = 3
+
+  Only 3 disk accesses to find any record among a million -- this is why
+  B+-trees dominate.
+
+--------------------------------------------------------------------------------
+
+Q18: B-tree vs B+-tree -- what's the difference?
+
+  Feature           B-tree                      B+-tree
+  --------------------------------------------------------------------------
+  Data pointers     In all nodes                Only in leaf nodes
+  Duplicate keys    No (each key appears once)  Yes (keys copied in internal
+                                                nodes)
+  Leaf linking      No linked list              Leaves linked for range scans
+  Range queries     Expensive (inorder           Efficient (scan linked
+                    traversal)                   leaves)
+  Fan-out           Lower (data pointers         Higher (internal nodes are
+                    take space)                  leaner)
+  Practical use     Rare                         Used by almost all RDBMS
+
+--------------------------------------------------------------------------------
+
+Q19: Why do databases prefer B+-trees over hash indices?
+
+- B+-trees handle both equality and range queries; hash only handles equality
+- B+-trees degrade gracefully under skewed data
+- Hash indices need rehashing when the file grows significantly
+- B+-trees are always balanced; hash can suffer from long overflow chains
+
+--------------------------------------------------------------------------------
+
+Q20: What is the cost of operations in a B+-tree?
+
+  Operation       Average Cost (disk I/O)
+  --------------------------------------------------------------------------
+  Search          O(log_ceil(n/2) N) -- typically 2-4
+  Insert          Search + possible splits: O(log_ceil(n/2) N)
+  Delete          Search + possible merges: O(log_ceil(n/2) N)
+  Range query     Search + scan k consecutive leaves
+
+================================================================================
+  Focus especially on B+-tree insertion/deletion with examples -- these are
+  the most common exam problems.
+================================================================================
