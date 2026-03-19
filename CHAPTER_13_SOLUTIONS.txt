@@ -1,0 +1,2203 @@
+Chapter 13: Data Storage Structures — Complete Exercise Solutions
+Database System Concepts, 7th Edition (Silberschatz, Korth, Sudarshan)
+=====================================================================
+
+Reference Table: instructor (used throughout these exercises)
++-------+------------+-----------+--------+
+| ID    | name       | dept_name | salary |
++-------+------------+-----------+--------+
+| 10101 | Srinivasan | Comp.Sci. | 65000  |
+| 12121 | Wu         | Finance   | 90000  |
+| 15151 | Mozart     | Music     | 40000  |
+| 22222 | Einstein   | Physics   | 95000  |
+| 32343 | El Said    | History   | 60000  |
+| 33456 | Gold       | Physics   | 87000  |
+| 45565 | Katz       | Comp.Sci. | 75000  |
+| 58583 | Califieri  | History   | 62000  |
+| 76543 | Singh      | Finance   | 80000  |
+| 76766 | Crick      | Biology   | 72000  |
+| 83821 | Brandt     | Comp.Sci. | 92000  |
+| 98345 | Kim        | Elec.Eng. | 80000  |
++-------+------------+-----------+--------+
+(12 records, as shown in Figure 13.1 of the textbook)
+
+
+========================================
+PRACTICE EXERCISES (13.1 - 13.8)
+========================================
+
+
+Exercise 13.1
+--------------
+Q: Consider the deletion of record 5 from the file of Figure 13.3.
+   Compare the relative merits of the following techniques:
+   a. Move record 6 to the space of record 5, and move record 7 to
+      the space of record 6.
+   b. Move record 7 to the space of record 5.
+   c. Mark record 5 as deleted, and move no records.
+
+   (Figure 13.3 shows the file after record 3 was deleted and the
+   last record (Kim, record 11) was moved into position 3.)
+
+A:
+
+SETUP: After record 3's deletion (Kim moved to position 3), the file is:
+
+  Pos | ID    | Name       | Dept      | Salary
+  ----|-------|------------|-----------|-------
+   0  | 10101 | Srinivasan | Comp.Sci. | 65000
+   1  | 12121 | Wu         | Finance   | 90000
+   2  | 15151 | Mozart     | Music     | 40000
+   3  | 98345 | Kim        | Elec.Eng. | 80000  <-- moved from pos 11
+   4  | 32343 | El Said    | History   | 60000
+   5  | 33456 | Gold       | Physics   | 87000  <-- TO DELETE
+   6  | 45565 | Katz       | Comp.Sci. | 75000
+   7  | 58583 | Califieri  | History   | 62000
+   8  | 76543 | Singh      | Finance   | 80000
+   9  | 76766 | Crick      | Biology   | 72000
+  10  | 83821 | Brandt     | Comp.Sci. | 92000
+
+  Total records: 11 (positions 0-10)
+  Assume each record = 64 bytes, block size = 256 bytes (4 records/block).
+
+  Block layout BEFORE deletion:
+  +--------------------+--------------------+--------------------+
+  | Block 0            | Block 1            | Block 2            |
+  | [Srinivasan]       | [El Said]          | [Singh]            |
+  | [Wu]               | [Gold] <-- DELETE  | [Crick]            |
+  | [Mozart]           | [Katz]             | [Brandt]           |
+  | [Kim]              | [Califieri]        |                    |
+  +--------------------+--------------------+--------------------+
+
+
+(a) Shift all records after position 5 down by one (compaction):
+
+  BEFORE:  [0:Srini] [1:Wu] [2:Mozart] [3:Kim] [4:ElSaid] [5:Gold] [6:Katz] [7:Cal] [8:Singh] [9:Crick] [10:Brandt]
+                                                              ^delete
+  AFTER:   [0:Srini] [1:Wu] [2:Mozart] [3:Kim] [4:ElSaid] [5:Katz] [6:Cal] [7:Singh] [8:Crick] [9:Brandt]
+
+  Records moved: 5 (Katz, Califieri, Singh, Crick, Brandt all shift left by 1)
+
+  Result file:
+  Pos | ID    | Name       | Dept      | Salary
+  ----|-------|------------|-----------|-------
+   0  | 10101 | Srinivasan | Comp.Sci. | 65000
+   1  | 12121 | Wu         | Finance   | 90000
+   2  | 15151 | Mozart     | Music     | 40000
+   3  | 98345 | Kim        | Elec.Eng. | 80000
+   4  | 32343 | El Said    | History   | 60000
+   5  | 45565 | Katz       | Comp.Sci. | 75000  <-- was pos 6
+   6  | 58583 | Califieri  | History   | 62000  <-- was pos 7
+   7  | 76543 | Singh      | Finance   | 80000  <-- was pos 8
+   8  | 76766 | Crick      | Biology   | 72000  <-- was pos 9
+   9  | 83821 | Brandt     | Comp.Sci. | 92000  <-- was pos 10
+
+  Block I/O cost analysis:
+  - Block 1 modified (remove Gold, shift Katz + Califieri): 1 read + 1 write
+  - Block 2 modified (shift Singh, Crick, Brandt):          1 read + 1 write
+  - Total: 2 reads + 2 writes = 4 I/O operations
+  - PLUS: 5 index updates (for records that changed position)
+
+  Advantages:
+  - No wasted space; file is fully compacted
+  - Sequential scan reads no empty slots
+  - No free list management needed
+
+  Disadvantages:
+  - EXPENSIVE: O(n) record moves in worst case
+    (deleting record 0 would move ALL n-1 records)
+  - Every moved record's index entries must be updated
+  - Multiple block writes required
+  - If records have external pointers (e.g., from other relations),
+    ALL those pointers become stale
+
+  Analogy: Like removing a person from a line at the DMV and making
+  everyone behind them step forward. Works, but annoying for everyone.
+
+
+(b) Move the LAST record (Brandt, position 10) into position 5:
+
+  BEFORE:  [0:Srini] [1:Wu] [2:Mozart] [3:Kim] [4:ElSaid] [5:Gold] [6:Katz] [7:Cal] [8:Singh] [9:Crick] [10:Brandt]
+                                                              ^delete                                       ^move here
+  AFTER:   [0:Srini] [1:Wu] [2:Mozart] [3:Kim] [4:ElSaid] [5:Brandt] [6:Katz] [7:Cal] [8:Singh] [9:Crick]
+
+  Records moved: 1 (only Brandt)
+
+  Result file:
+  Pos | ID    | Name       | Dept      | Salary
+  ----|-------|------------|-----------|-------
+   0  | 10101 | Srinivasan | Comp.Sci. | 65000
+   1  | 12121 | Wu         | Finance   | 90000
+   2  | 15151 | Mozart     | Music     | 40000
+   3  | 98345 | Kim        | Elec.Eng. | 80000
+   4  | 32343 | El Said    | History   | 60000
+   5  | 83821 | Brandt     | Comp.Sci. | 92000  <-- moved from pos 10
+   6  | 45565 | Katz       | Comp.Sci. | 75000
+   7  | 58583 | Califieri  | History   | 62000
+   8  | 76543 | Singh      | Finance   | 80000
+   9  | 76766 | Crick      | Biology   | 72000
+
+  Block I/O cost analysis:
+  - Block 1 modified (overwrite Gold with Brandt): 1 read + 1 write
+  - Block 2 modified (mark Brandt's old slot free): 1 read + 1 write
+  - Total: 2 reads + 2 writes = 4 I/Os
+  - PLUS: only 1 index update (for Brandt)
+
+  Advantages:
+  - Only ONE record moved (very cheap!)
+  - No wasted space; file shrinks by one record
+  - Constant cost O(1) regardless of file size
+
+  Disadvantages:
+  - Must update index entries pointing to Brandt (now at position 5)
+  - Breaks physical ordering if the file was sorted
+    (Brandt at position 5 is out of alphabetical/ID order)
+
+  Analogy: Like removing someone from a line and asking the last person
+  to fill the gap. Quick, but now the line is no longer in order.
+
+
+(c) Mark record 5 as deleted; move no records:
+
+  BEFORE:  [0:Srini] [1:Wu] [2:Mozart] [3:Kim] [4:ElSaid] [5:Gold] [6:Katz] ...
+  AFTER:   [0:Srini] [1:Wu] [2:Mozart] [3:Kim] [4:ElSaid] [5:XXXXX] [6:Katz] ...
+                                                              ^marked deleted
+
+  Result file:
+  Pos | ID    | Name       | Dept      | Salary
+  ----|-------|------------|-----------|-------
+   0  | 10101 | Srinivasan | Comp.Sci. | 65000
+   1  | 12121 | Wu         | Finance   | 90000
+   2  | 15151 | Mozart     | Music     | 40000
+   3  | 98345 | Kim        | Elec.Eng. | 80000
+   4  | 32343 | El Said    | History   | 60000
+   5  | XXXXX | (deleted)  |           |        <-- marked deleted
+   6  | 45565 | Katz       | Comp.Sci. | 75000
+   7  | 58583 | Califieri  | History   | 62000
+   8  | 76543 | Singh      | Finance   | 80000
+   9  | 76766 | Crick      | Biology   | 72000
+  10  | 83821 | Brandt     | Comp.Sci. | 92000
+
+  Block I/O cost analysis:
+  - Block 1 modified (set deletion marker on Gold): 1 read + 1 write
+  - Total: 1 read + 1 write = 2 I/Os
+  - PLUS: 0 index updates for other records
+  - PLUS: add pos 5 to free list (in-memory operation)
+
+  Advantages:
+  - CHEAPEST option: no data movement, just mark one slot
+  - No index updates needed for other records
+  - Constant cost O(1)
+  - Space can be reused by future insertions via free list
+
+  Disadvantages:
+  - Wasted space (64 bytes) until the slot is reused
+  - Sequential scans must skip deleted slots (wastes I/O bandwidth)
+  - Over time, many deletions fragment the file
+  - Need to maintain a free list structure
+
+  Analogy: Like putting a "reserved" sign on an empty chair in a theater.
+  Nobody moves, but the chair sits unused until someone new shows up.
+
+  SUMMARY COMPARISON TABLE:
+  +-------------------+----------+---------+---------+--------+-----------+
+  | Metric            | (a) Shift| (b) Move| (c) Mark|  Best  |  Worst    |
+  |                   |   all    |  last   | deleted |        |           |
+  +-------------------+----------+---------+---------+--------+-----------+
+  | Records moved     |    5     |    1    |    0    |  (c)   |   (a)     |
+  | I/Os              |    4     |    4    |    2    |  (c)   |   (a)=(b) |
+  | Index updates     |    5     |    1    |    0    |  (c)   |   (a)     |
+  | Wasted space      |    0     |    0    |  64 B   |  (a)=(b)|  (c)     |
+  | Preserves order   |   Yes    |   No    |   Yes   |  (a)   |   (b)     |
+  | Complexity        |  O(n)    |  O(1)   |  O(1)   |  (b)=(c)|  (a)     |
+  +-------------------+----------+---------+---------+--------+-----------+
+
+  CONCLUSION: Option (c) is generally preferred in practice because it
+  avoids the cost of moving records and updating indices. Option (b) is
+  a reasonable middle ground when space efficiency matters. Option (a)
+  is rarely used due to its high cost.
+
+  WHY THIS MATTERS: In a production database with millions of records,
+  deletes happen constantly. PostgreSQL, for example, uses option (c) --
+  dead tuples are marked and later cleaned up by VACUUM (a background
+  compaction process). This avoids the cascading cost of (a) while
+  eventually reclaiming space.
+
+
+Exercise 13.2
+--------------
+Q: Show the structure of the file of Figure 13.4 after each of the
+   following steps:
+   a. Insert (24556, Turnamian, Finance, 98000).
+   b. Delete record 2.
+   c. Insert (34556, Thompson, Music, 67000).
+
+   Figure 13.4 shows the file after deletion of records 1, 4, and 6.
+
+A:
+
+SETUP: Understanding the Free List
+
+  A free list is a linked list threaded through deleted record slots.
+  The file header stores a pointer to the first free slot. Each deleted
+  slot stores a pointer to the next free slot.
+
+  Think of it like a chain:
+    header --> first_free --> second_free --> ... --> END
+
+  When we INSERT, we grab the slot at the head of the list.
+  When we DELETE, we push the newly freed slot onto the head.
+
+  INITIAL STATE (from Figure 13.4, after deleting records 1, 4, and 6):
+
+  Free list chain: header --> 6 --> 4 --> 1 --> END
+
+  Visual of the file:
+  +-----+--------------------------------------------------+-----------+
+  | Pos | Contents                                         | Free ptr  |
+  +-----+--------------------------------------------------+-----------+
+  | HDR | (file header, free list pointer = 6)             |     6     |
+  |  0  | 10101  Srinivasan  Comp.Sci.  65000              |    ---    |
+  |  1  | (deleted)                                        |    END    |
+  |  2  | 15151  Mozart      Music      40000              |    ---    |
+  |  3  | 22222  Einstein    Physics    95000              |    ---    |
+  |  4  | (deleted)                                        |     1     |
+  |  5  | 33456  Gold        Physics    87000              |    ---    |
+  |  6  | (deleted)                                        |     4     |
+  |  7  | 58583  Califieri   History    62000              |    ---    |
+  |  8  | 76543  Singh       Finance    80000              |    ---    |
+  |  9  | 76766  Crick       Biology    72000              |    ---    |
+  | 10  | 83821  Brandt      Comp.Sci.  92000              |    ---    |
+  | 11  | 98345  Kim         Elec.Eng.  80000              |    ---    |
+  +-----+--------------------------------------------------+-----------+
+
+  Free list diagram:
+    HDR ---> [6: deleted] ---> [4: deleted] ---> [1: deleted] ---> END
+                  ^                 ^                  ^
+              1st free          2nd free           3rd free
+
+
+STEP (a): Insert (24556, Turnamian, Finance, 98000)
+
+  1. Follow header pointer: first free slot = 6
+  2. Read record 6's next pointer: points to 4
+  3. Write new record into slot 6
+  4. Update header to point to 4
+
+  Operation on the free list:
+    BEFORE:  HDR --> 6 --> 4 --> 1 --> END
+    AFTER:   HDR --> 4 --> 1 --> END
+                     ^
+               (6 is now occupied by Turnamian)
+
+  File state after step (a):
+  +-----+--------------------------------------------------+-----------+
+  | Pos | Contents                                         | Free ptr  |
+  +-----+--------------------------------------------------+-----------+
+  | HDR | (free list pointer = 4)                          |     4     |
+  |  0  | 10101  Srinivasan  Comp.Sci.  65000              |    ---    |
+  |  1  | (deleted)                                        |    END    |
+  |  2  | 15151  Mozart      Music      40000              |    ---    |
+  |  3  | 22222  Einstein    Physics    95000              |    ---    |
+  |  4  | (deleted)                                        |     1     |
+  |  5  | 33456  Gold        Physics    87000              |    ---    |
+  |  6  | 24556  Turnamian   Finance    98000  ** NEW **   |    ---    |
+  |  7  | 58583  Califieri   History    62000              |    ---    |
+  |  8  | 76543  Singh       Finance    80000              |    ---    |
+  |  9  | 76766  Crick       Biology    72000              |    ---    |
+  | 10  | 83821  Brandt      Comp.Sci.  92000              |    ---    |
+  | 11  | 98345  Kim         Elec.Eng.  80000              |    ---    |
+  +-----+--------------------------------------------------+-----------+
+
+  SQL equivalent of what just happened:
+    INSERT INTO instructor VALUES (24556, 'Turnamian', 'Finance', 98000);
+
+
+STEP (b): Delete record 2 (Mozart)
+
+  1. Mark record 2 as deleted
+  2. Record 2's next pointer = current header value (4)
+  3. Update header to point to 2 (push onto head of free list)
+
+  Operation on the free list:
+    BEFORE:  HDR --> 4 --> 1 --> END
+    AFTER:   HDR --> 2 --> 4 --> 1 --> END
+                     ^
+              (2 is newly deleted, pushed to front)
+
+  File state after step (b):
+  +-----+--------------------------------------------------+-----------+
+  | Pos | Contents                                         | Free ptr  |
+  +-----+--------------------------------------------------+-----------+
+  | HDR | (free list pointer = 2)                          |     2     |
+  |  0  | 10101  Srinivasan  Comp.Sci.  65000              |    ---    |
+  |  1  | (deleted)                                        |    END    |
+  |  2  | (deleted)  ** NEWLY DELETED **                   |     4     |
+  |  3  | 22222  Einstein    Physics    95000              |    ---    |
+  |  4  | (deleted)                                        |     1     |
+  |  5  | 33456  Gold        Physics    87000              |    ---    |
+  |  6  | 24556  Turnamian   Finance    98000              |    ---    |
+  |  7  | 58583  Califieri   History    62000              |    ---    |
+  |  8  | 76543  Singh       Finance    80000              |    ---    |
+  |  9  | 76766  Crick       Biology    72000              |    ---    |
+  | 10  | 83821  Brandt      Comp.Sci.  92000              |    ---    |
+  | 11  | 98345  Kim         Elec.Eng.  80000              |    ---    |
+  +-----+--------------------------------------------------+-----------+
+
+  SQL equivalent:
+    DELETE FROM instructor WHERE ID = 15151;   -- (Mozart)
+
+
+STEP (c): Insert (34556, Thompson, Music, 67000)
+
+  1. Follow header pointer: first free slot = 2
+  2. Read record 2's next pointer: points to 4
+  3. Write new record into slot 2
+  4. Update header to point to 4
+
+  Operation on the free list:
+    BEFORE:  HDR --> 2 --> 4 --> 1 --> END
+    AFTER:   HDR --> 4 --> 1 --> END
+                     ^
+              (2 is now occupied by Thompson)
+
+  File state after step (c) -- FINAL STATE:
+  +-----+--------------------------------------------------+-----------+
+  | Pos | Contents                                         | Free ptr  |
+  +-----+--------------------------------------------------+-----------+
+  | HDR | (free list pointer = 4)                          |     4     |
+  |  0  | 10101  Srinivasan  Comp.Sci.  65000              |    ---    |
+  |  1  | (deleted)                                        |    END    |
+  |  2  | 34556  Thompson    Music      67000  ** NEW **   |    ---    |
+  |  3  | 22222  Einstein    Physics    95000              |    ---    |
+  |  4  | (deleted)                                        |     1     |
+  |  5  | 33456  Gold        Physics    87000              |    ---    |
+  |  6  | 24556  Turnamian   Finance    98000              |    ---    |
+  |  7  | 58583  Califieri   History    62000              |    ---    |
+  |  8  | 76543  Singh       Finance    80000              |    ---    |
+  |  9  | 76766  Crick       Biology    72000              |    ---    |
+  | 10  | 83821  Brandt      Comp.Sci.  92000              |    ---    |
+  | 11  | 98345  Kim         Elec.Eng.  80000              |    ---    |
+  +-----+--------------------------------------------------+-----------+
+
+  Final free list:  HDR --> 4 --> 1 --> END
+  Occupied slots:   0, 2, 3, 5, 6, 7, 8, 9, 10, 11  (10 records)
+  Free slots:       1, 4                              (2 slots)
+
+  WHY THIS MATTERS: Free lists allow O(1) insertion into deleted slots
+  without scanning the entire file. This is the standard technique in
+  heap files used by PostgreSQL, Oracle, and other databases. The key
+  insight is that insertions always consume from the HEAD of the free
+  list, and deletions always push onto the HEAD -- making both O(1),
+  just like a stack (LIFO order).
+
+
+Exercise 13.3
+--------------
+Q: Consider the relations section and takes. Give an example instance
+   of these two relations, with three sections, each of which has five
+   students. Give a file structure of these relations that uses
+   multitable clustering.
+
+A:
+
+BACKGROUND: What is Multitable Clustering?
+
+  Normally, each relation is stored in its own file:
+
+    section file:  [sec1] [sec2] [sec3] ...
+    takes file:    [t1] [t2] [t3] [t4] [t5] [t6] [t7] ...
+
+  A natural join requires reading BOTH files -- potentially many I/Os.
+
+  With multitable clustering, records from DIFFERENT relations that are
+  related (share the same join key) are stored on the SAME disk block:
+
+    Block 1: [sec1] [t1] [t2] [t3] [t4] [t5]    <-- all for CS-101
+    Block 2: [sec2] [t6] [t7] [t8] [t9] [t10]   <-- all for CS-201
+    Block 3: [sec3] [t11] [t12] [t13] [t14] [t15] <-- all for PHY-101
+
+  Now the join is served from a single block per section!
+
+
+EXAMPLE DATA:
+
+  section relation (3 rows):
+  +----------+--------+----------+------+----------+------+-----------+
+  | course_id| sec_id | semester | year | building | room | time_slot |
+  +----------+--------+----------+------+----------+------+-----------+
+  | CS-101   | 1      | Fall     | 2023 | Taylor   | 101  | A         |
+  | CS-201   | 1      | Fall     | 2023 | Watson   | 201  | B         |
+  | PHY-101  | 1      | Fall     | 2023 | Einstein | 301  | C         |
+  +----------+--------+----------+------+----------+------+-----------+
+
+  takes relation (15 rows, 5 students per section):
+  +------+----------+--------+----------+------+-------+
+  | ID   | course_id| sec_id | semester | year | grade |
+  +------+----------+--------+----------+------+-------+
+  | 1001 | CS-101   | 1      | Fall     | 2023 | A     |
+  | 1002 | CS-101   | 1      | Fall     | 2023 | B+    |
+  | 1003 | CS-101   | 1      | Fall     | 2023 | A-    |
+  | 1004 | CS-101   | 1      | Fall     | 2023 | B     |
+  | 1005 | CS-101   | 1      | Fall     | 2023 | A     |
+  | 2001 | CS-201   | 1      | Fall     | 2023 | B+    |
+  | 2002 | CS-201   | 1      | Fall     | 2023 | A     |
+  | 2003 | CS-201   | 1      | Fall     | 2023 | C+    |
+  | 2004 | CS-201   | 1      | Fall     | 2023 | B     |
+  | 2005 | CS-201   | 1      | Fall     | 2023 | A-    |
+  | 3001 | PHY-101  | 1      | Fall     | 2023 | B     |
+  | 3002 | PHY-101  | 1      | Fall     | 2023 | A-    |
+  | 3003 | PHY-101  | 1      | Fall     | 2023 | B+    |
+  | 3004 | PHY-101  | 1      | Fall     | 2023 | C     |
+  | 3005 | PHY-101  | 1      | Fall     | 2023 | A     |
+  +------+----------+--------+----------+------+-------+
+
+
+MULTITABLE CLUSTERING FILE STRUCTURE:
+(clustered on the join key: course_id, sec_id, semester, year)
+
+  Each block groups a section record with its related takes records:
+
+  +==================================================================+
+  | Block 1: CS-101, sec 1, Fall 2023                                |
+  |------------------------------------------------------------------|
+  | [section] CS-101 | 1 | Fall | 2023 | Taylor  | 101 | A          |
+  | [takes]   1001   | CS-101 | 1 | Fall | 2023 | A                |
+  | [takes]   1002   | CS-101 | 1 | Fall | 2023 | B+               |
+  | [takes]   1003   | CS-101 | 1 | Fall | 2023 | A-               |
+  | [takes]   1004   | CS-101 | 1 | Fall | 2023 | B                |
+  | [takes]   1005   | CS-101 | 1 | Fall | 2023 | A                |
+  +==================================================================+
+
+  +==================================================================+
+  | Block 2: CS-201, sec 1, Fall 2023                                |
+  |------------------------------------------------------------------|
+  | [section] CS-201 | 1 | Fall | 2023 | Watson  | 201 | B          |
+  | [takes]   2001   | CS-201 | 1 | Fall | 2023 | B+               |
+  | [takes]   2002   | CS-201 | 1 | Fall | 2023 | A                |
+  | [takes]   2003   | CS-201 | 1 | Fall | 2023 | C+               |
+  | [takes]   2004   | CS-201 | 1 | Fall | 2023 | B                |
+  | [takes]   2005   | CS-201 | 1 | Fall | 2023 | A-               |
+  +==================================================================+
+
+  +==================================================================+
+  | Block 3: PHY-101, sec 1, Fall 2023                               |
+  |------------------------------------------------------------------|
+  | [section] PHY-101| 1 | Fall | 2023 | Einstein| 301 | C          |
+  | [takes]   3001   | PHY-101 | 1 | Fall | 2023 | B               |
+  | [takes]   3002   | PHY-101 | 1 | Fall | 2023 | A-              |
+  | [takes]   3003   | PHY-101 | 1 | Fall | 2023 | B+              |
+  | [takes]   3004   | PHY-101 | 1 | Fall | 2023 | C               |
+  | [takes]   3005   | PHY-101 | 1 | Fall | 2023 | A               |
+  +==================================================================+
+
+  Note: Each record has a type tag ([section] or [takes]) so the system
+  knows which relation a record belongs to.
+
+
+PERFORMANCE COMPARISON:
+
+  Query: SELECT * FROM section NATURAL JOIN takes
+         WHERE course_id = 'CS-101' AND sec_id = '1'
+               AND semester = 'Fall' AND year = 2023;
+
+  Without multitable clustering:
+    - Read section file, find CS-101 row:        1+ block reads
+    - Read takes file, find 5 matching rows:     potentially many block reads
+      (takes records for CS-101 might be scattered across multiple blocks)
+    - Total I/Os: potentially 6+ block reads
+
+  With multitable clustering:
+    - Read Block 1 (contains BOTH the section record AND all 5 takes records):
+    - Total I/Os: 1 block read  <-- 6x improvement!
+
+  TRADEOFF:
+
+  Query: SELECT * FROM section;  (scan only section records)
+
+  Without multitable clustering:
+    - Scan the section file only: 1 block (3 records fit in 1 block)
+
+  With multitable clustering:
+    - Must scan ALL 3 blocks, skipping over takes records in each block
+    - Total I/Os: 3 block reads (reading 18 records to find 3)
+    - 3x more I/O for a single-relation scan!
+
+  WHY THIS MATTERS: Multitable clustering is ideal when joins on the
+  cluster key dominate the workload. Oracle's "cluster" feature and
+  some column-family stores (Cassandra) use similar ideas. But if your
+  workload is mostly single-table scans, clustering hurts performance.
+
+
+Exercise 13.4
+--------------
+Q: Consider the bitmap representation of the free-space map, where for
+   each block in the file, two bits are maintained. If the block is
+   between 0 and 30 percent full the bits are 00, between 30 and 60
+   percent the bits are 01, between 60 and 90 percent the bits are 10,
+   and above 90 percent the bits are 11.
+
+A:
+
+BACKGROUND: Why Track Free Space?
+
+  When inserting a record, the system needs to find a block with enough
+  room. There are two main approaches:
+
+  1. FREE LIST: A linked list of blocks with free space.
+     Problem: Must inspect each block to see if it has ENOUGH space.
+
+  2. FREE-SPACE MAP (bitmap): A compact map giving approximate free
+     space per block. Allows quickly finding blocks with sufficient room.
+
+
+(a) Two benefits and one drawback of using two bits per block:
+
+  The 2-bit encoding:
+    +------+------------------+-------------------+
+    | Bits | Occupancy range  | Interpretation    |
+    +------+------------------+-------------------+
+    |  00  | 0% - 30% full    | Mostly empty      |
+    |  01  | 30% - 60% full   | Partially full    |
+    |  10  | 60% - 90% full   | Mostly full       |
+    |  11  | 90% - 100% full  | Nearly/completely |
+    +------+------------------+-------------------+
+
+  CONCRETE EXAMPLE:
+  Suppose block size = 4 KB = 4096 bytes, and we have a file with 8 blocks:
+
+  Block:     |  B0  |  B1  |  B2  |  B3  |  B4  |  B5  |  B6  |  B7  |
+  Used:      | 800B |3200B |2400B | 100B |3900B |1800B |4000B |   0B |
+  % full:    |  20% |  78% |  59% |   2% |  95% |  44% |  98% |   0% |
+  Bits:      |  00  |  10  |  01  |  00  |  11  |  01  |  11  |  00  |
+
+  The complete bitmap: 00 10 01 00 11 01 11 00  (16 bits = 2 bytes for 8 blocks!)
+
+  Benefit 1 -- SPACE EFFICIENCY:
+    2 bits per block is very compact. For a file with 1 million blocks:
+      Bitmap size = 1,000,000 * 2 bits = 250 KB
+
+    Compare with other approaches:
+    +---------------------+-------------------+
+    | Approach            | Size (1M blocks)  |
+    +---------------------+-------------------+
+    | 1-bit bitmap        | 125 KB            |
+    | 2-bit bitmap        | 250 KB            |
+    | 1-byte count        | 1,000 KB (1 MB)   |
+    | 4-byte count        | 4,000 KB (4 MB)   |
+    | Free list (pointers)| variable, larger  |
+    +---------------------+-------------------+
+
+    At 250 KB, the entire bitmap easily fits in memory, enabling fast
+    lookups without any disk I/O.
+
+  Benefit 2 -- GRANULARITY OF FREE SPACE INFO:
+    Unlike a simple 1-bit bitmap (free/not-free), the 2-bit version tells
+    us approximately HOW MUCH space is free.
+
+    Scenario: Need to insert a 1500-byte record into a 4096-byte block.
+    That requires at least 37% free space. We need a block with bits 00
+    or 01 (at most 60% full, so at least 40% free).
+
+    With a 2-bit bitmap, we can scan for blocks with bits 00 or 01 and
+    skip blocks with bits 10 or 11. This avoids reading blocks that are
+    too full.
+
+    With a 1-bit bitmap, we only know "has some space" vs "full", so we
+    might read a block that is 89% full and cannot fit our 1500-byte record.
+
+  Drawback -- LESS PRECISION:
+    With only 4 levels, two very different blocks look the same:
+
+    Block X: 31% full (bits = 01), free space = 69% = 2826 bytes
+    Block Y: 59% full (bits = 01), free space = 41% = 1680 bytes
+
+    If we need to insert a 2000-byte record, Block X has room but Block Y
+    does not. Yet both have the same bitmap value (01). The system may
+    try Block Y first, fail, then try Block X -- wasting an I/O.
+
+
+(b) Keeping the bitmap up to date on insertions and deletions:
+
+  STEP-BY-STEP for an INSERT:
+
+    1. Insert record into block B (block now has more data)
+    2. Calculate new occupancy:
+       occupancy = (used_space_after / block_size) * 100
+    3. Determine new 2-bit code:
+       if occupancy < 30:  new_bits = 00
+       elif occupancy < 60: new_bits = 01
+       elif occupancy < 90: new_bits = 10
+       else:                new_bits = 11
+    4. If new_bits differs from current bits for B in the bitmap:
+       Update bitmap entry for block B
+
+  EXAMPLE:
+    Block B2 was at 59% full (bits = 01). We insert a 200-byte record.
+    New occupancy = (2400 + 200) / 4096 = 63% --> bits = 10 (changed!)
+
+    Bitmap BEFORE: 00 10 [01] 00 11 01 11 00
+    Bitmap AFTER:  00 10 [10] 00 11 01 11 00
+                          ^^
+                     B2 updated from 01 to 10
+
+  STEP-BY-STEP for a DELETE:
+
+    1. Delete record from block B (block now has less data)
+    2. Calculate new occupancy
+    3. Determine new bits
+    4. Update bitmap if changed
+
+  EXAMPLE:
+    Block B4 was at 95% full (bits = 11). We delete a 500-byte record.
+    New occupancy = (3900 - 500) / 4096 = 83% --> bits = 10 (changed!)
+
+    Bitmap BEFORE: 00 10 10 00 [11] 01 11 00
+    Bitmap AFTER:  00 10 10 00 [10] 01 11 00
+
+  The bitmap is kept in memory for fast updates. It is periodically
+  flushed to disk. On recovery, it can be reconstructed by scanning
+  all blocks (or using the last checkpoint plus WAL replay).
+
+
+(c) Benefits over free lists:
+
+  +-----------------------------------+------------------+-------------------+
+  | Feature                           | 2-bit Bitmap     | Free List         |
+  +-----------------------------------+------------------+-------------------+
+  | Find block with >= X% free space  | Scan bitmap O(n) | Must read each    |
+  |                                   | (in memory, fast)| block O(n * I/O!) |
+  +-----------------------------------+------------------+-------------------+
+  | Update on insert/delete           | O(1) in memory   | O(1) pointer ops  |
+  |                                   |                  | (but in disk block)|
+  +-----------------------------------+------------------+-------------------+
+  | Space overhead                    | 2 bits / block   | Pointer per free  |
+  |                                   | (compact)        | block (4-8 bytes) |
+  +-----------------------------------+------------------+-------------------+
+  | Can stay in memory?               | Yes (250 KB/1M)  | Possibly (but     |
+  |                                   |                  | pointers in blocks)|
+  +-----------------------------------+------------------+-------------------+
+  | Knows HOW MUCH space is free?     | Yes (4 levels)   | No (only that     |
+  |                                   |                  | some space exists) |
+  +-----------------------------------+------------------+-------------------+
+
+  Key advantage: With a free list, if you need 2000 bytes of free space,
+  you follow the list and must READ each candidate block from disk to
+  check if it has enough room. With a bitmap, you scan the in-memory map
+  and immediately find blocks coded 00 (at least 70% free = 2867 bytes
+  for a 4KB block) -- no disk I/O needed.
+
+  WHY THIS MATTERS: PostgreSQL uses a "Free Space Map" (FSM) that stores
+  1 byte per page (256 levels of free space), which is an even finer-grained
+  version of this concept. It fits entirely in shared memory and allows
+  HEAP_INSERT to find a suitable page without any extra I/O.
+
+
+Exercise 13.5
+--------------
+Q: It is important to be able to quickly find out if a block is present
+   in the buffer, and if so where in the buffer it resides. Given that
+   database buffer sizes are very large, what (in-memory) data structure
+   would you use for this task?
+
+A: A HASH TABLE (hash map) keyed on the block identifier.
+
+  CONCRETE SETUP:
+  Suppose the database has 10 million blocks on disk, but the buffer pool
+  only holds 100,000 blocks in memory (1% of the database). We need a
+  data structure that maps:
+
+    block_id (disk address) --> buffer_frame_number (memory location)
+
+  The structure only holds entries for blocks currently IN the buffer.
+
+
+  THE HASH TABLE APPROACH:
+
+    +---------------------------------------------------+
+    | Hash Table (in memory)                            |
+    |                                                   |
+    |   hash(block_id) --> bucket                       |
+    |                                                   |
+    |   Bucket 0: [block 4521 -> frame 12] -> NULL      |
+    |   Bucket 1: [block 8833 -> frame 45] -> NULL      |
+    |   Bucket 2: NULL                                  |
+    |   Bucket 3: [block 7012 -> frame 88] ->           |
+    |             [block 3003 -> frame 7]  -> NULL      |
+    |   ...                                             |
+    |   Bucket N: [block 1555 -> frame 23] -> NULL      |
+    +---------------------------------------------------+
+
+  Performance:
+  +-------------------+----------------+
+  | Operation         | Average Cost   |
+  +-------------------+----------------+
+  | Lookup (is block  |                |
+  |   in buffer?)     | O(1)           |
+  | Insert (block     |                |
+  |   loaded)         | O(1)           |
+  | Delete (block     |                |
+  |   evicted)        | O(1)           |
+  +-------------------+----------------+
+
+
+  WHY NOT OTHER DATA STRUCTURES?
+
+  +-----------------------+------------+----------------------------------+
+  | Data Structure        | Lookup     | Why not?                         |
+  +-----------------------+------------+----------------------------------+
+  | Hash table            | O(1) avg   | BEST CHOICE                      |
+  | B+-tree               | O(log n)   | Unnecessary -- we only need      |
+  |                       |            | equality lookups, not ranges     |
+  | Sorted array          | O(log n)   | Inserts/deletes require shifting |
+  | Linear scan           | O(n)       | Far too slow for 100K entries    |
+  | Direct-mapped array   | O(1)       | Would need 10M entries but only  |
+  | (indexed by block_id) |            | 100K are used -- 99% waste       |
+  +-----------------------+------------+----------------------------------+
+
+  SIZING THE HASH TABLE:
+    Buffer = 100,000 frames
+    Hash table buckets = ~130,000 (load factor = 0.75)
+    Each entry: block_id (8 bytes) + frame_ptr (8 bytes) + next_ptr (8 bytes)
+    Total memory: ~100,000 * 24 bytes = 2.4 MB (trivial)
+
+  REAL-WORLD EXAMPLES:
+    - PostgreSQL: Uses a hash table (dynahash) for buffer tag lookup.
+      Each buffer tag = (relation_id, fork_number, block_number).
+      The hash table maps tags to buffer IDs.
+    - MySQL InnoDB: Uses a hash table indexed on (space_id, page_number)
+      to find pages in the buffer pool.
+    - Oracle: Uses hash buckets with cache buffer chains (latches protect
+      concurrent access).
+
+  WHY THIS MATTERS: Every single page access in the database goes through
+  this lookup. If a query touches 10,000 pages, the hash table is consulted
+  10,000 times. O(1) vs O(log n) here means the difference between 10,000
+  hash lookups (~10 microseconds total) and 10,000 * 17 comparisons
+  (~170 microseconds for a tree with 100K entries). Over millions of
+  queries per second, this adds up significantly.
+
+
+Exercise 13.6
+--------------
+Q: Suppose your university has a very large number of takes records,
+   accumulated over many years. Explain how table partitioning can be
+   done on the takes relation, and what benefits it could offer. Explain
+   also one potential drawback.
+
+A:
+
+SCENARIO:
+  The university has been recording enrollment since 2000. With ~5,000
+  students and ~5 courses/student/semester, that is:
+
+  Records per year: 5000 * 5 * 2 semesters = 50,000 records
+  Total records (2000-2023): 50,000 * 24 = 1,200,000 records
+
+  Assume each record is 60 bytes:
+  Total size: 1,200,000 * 60 = 72 MB
+  With 4 KB blocks: 72 MB / 4 KB = 18,000 blocks
+
+  Most queries only care about recent data (current semester or year),
+  but every full table scan must read all 18,000 blocks.
+
+
+PARTITIONING STRATEGY (by year):
+
+  Instead of one giant takes table, split it into one partition per year:
+
+  +------------------------------+
+  | takes (partitioned by year)  |
+  +------------------------------+
+  |                              |
+  |  takes_2019  (50K records)   |  <-- ~750 blocks
+  |  takes_2020  (50K records)   |  <-- ~750 blocks
+  |  takes_2021  (50K records)   |  <-- ~750 blocks
+  |  takes_2022  (50K records)   |  <-- ~750 blocks
+  |  takes_2023  (50K records)   |  <-- ~750 blocks
+  |  ...                         |
+  +------------------------------+
+
+  SQL to create this in PostgreSQL:
+
+    CREATE TABLE takes (
+        ID          VARCHAR(5),
+        course_id   VARCHAR(8),
+        sec_id      VARCHAR(8),
+        semester    VARCHAR(6),
+        year        NUMERIC(4,0),
+        grade       VARCHAR(2)
+    ) PARTITION BY RANGE (year);
+
+    CREATE TABLE takes_2021 PARTITION OF takes
+        FOR VALUES FROM (2021) TO (2022);
+    CREATE TABLE takes_2022 PARTITION OF takes
+        FOR VALUES FROM (2022) TO (2023);
+    CREATE TABLE takes_2023 PARTITION OF takes
+        FOR VALUES FROM (2023) TO (2024);
+    -- ... one partition per year
+
+
+BENEFITS:
+
+  1. FASTER QUERIES ON RECENT DATA (Partition Pruning):
+
+     Query: "Find all A grades in Fall 2023"
+       SELECT * FROM takes WHERE year = 2023 AND semester = 'Fall'
+              AND grade = 'A';
+
+     Without partitioning: scan ALL 18,000 blocks (72 MB)
+     With partitioning:    scan only takes_2023 = 750 blocks (3 MB)
+     Speedup: ~24x (only 1/24th of the data!)
+
+  2. SMALLER, FASTER INDEXES:
+
+     Without partitioning: index on (year, semester) covers 1.2M records
+       B+-tree height: log_100(1,200,000) = ~3 levels
+       Index size: ~12 MB
+
+     With partitioning: index on (semester) per partition covers 50K records
+       B+-tree height: log_100(50,000) = ~2 levels
+       Index size per partition: ~500 KB
+       The smaller index fits in buffer cache more easily.
+
+  3. EFFICIENT ARCHIVAL AND STORAGE TIERING:
+
+     +-------------------+------------------+
+     | Partition         | Storage Tier     |
+     +-------------------+------------------+
+     | takes_2023        | SSD (fast, $$$)  |
+     | takes_2022        | SSD              |
+     | takes_2021        | HDD (slow, $)    |
+     | takes_2020        | HDD              |
+     | takes_pre_2020    | Archive / tape   |
+     +-------------------+------------------+
+
+  4. INSTANT DATA REMOVAL:
+
+     To purge old data:
+       DROP TABLE takes_2015;   -- instant, O(1)
+
+     vs.
+       DELETE FROM takes WHERE year = 2015;  -- scans all 18K blocks,
+                                             -- generates tons of WAL,
+                                             -- leaves dead tuples
+
+  5. PARALLEL MAINTENANCE:
+
+     VACUUM (cleanup) and ANALYZE (statistics) run per-partition,
+     reducing lock contention and memory usage.
+
+
+POTENTIAL DRAWBACK -- CROSS-PARTITION QUERIES:
+
+  Query: "How many courses has each student taken across all years?"
+    SELECT ID, COUNT(*) FROM takes GROUP BY ID;
+
+  This query spans ALL partitions. The system must:
+  1. Open and scan every partition (24 partitions)
+  2. Merge results across partitions
+  3. Total I/O = all 18,000 blocks (no pruning possible)
+
+  This can actually be SLOWER than a single unpartitioned table because:
+  - Overhead of opening 24 separate files/indexes
+  - If the optimizer doesn't parallelize well, sequential scan of 24
+    small files may be slower than one sequential scan of 1 large file
+  - Index lookups must check each partition's index separately
+
+  ADDITIONAL OVERHEAD:
+  - Schema changes (ALTER TABLE) must be applied to ALL partitions
+  - INSERT routing must determine the correct partition (small CPU cost)
+  - More complex backup/restore procedures
+
+  WHY THIS MATTERS: Partitioning is one of the most important
+  performance tools in production databases. Every major RDBMS supports
+  it (PostgreSQL PARTITION BY, MySQL PARTITION BY, Oracle partitioned
+  tables). The key design decision is choosing the right partition key --
+  a column that frequently appears in WHERE clauses and naturally
+  divides the data into manageable chunks.
+
+
+Exercise 13.7
+--------------
+Q: Give an example of a relational-algebra expression and a query-
+   processing strategy in each of the following situations:
+   a. MRU is preferable to LRU.
+   b. LRU is preferable to MRU.
+
+A:
+
+BACKGROUND: Buffer Replacement Policies
+
+  When the buffer pool is full and a new block must be loaded, one
+  existing block must be evicted. The two main policies:
+
+  LRU (Least Recently Used): Evict the block accessed LONGEST AGO.
+    Intuition: "If you haven't been used recently, you won't be needed soon."
+
+  MRU (Most Recently Used): Evict the block accessed MOST RECENTLY.
+    Intuition: "You just finished being used, so you won't be needed again soon."
+
+
+(a) MRU is preferable to LRU -- NESTED-LOOP JOIN:
+
+  Expression: instructor NATURAL JOIN department
+  Strategy:   Simple nested-loop join (instructor = outer, department = inner)
+
+  Assume:
+  - instructor has 12 records across 3 blocks (I1, I2, I3)
+  - department has 7 records across 2 blocks (D1, D2)
+  - Buffer has 3 frames (can hold 3 blocks)
+
+  The nested-loop algorithm:
+    for each block Bi of instructor:         -- outer loop
+        for each block Dj of department:     -- inner loop
+            for each record r in Bi:
+                for each record s in Dj:
+                    if r.dept_name = s.dept_name:
+                        output (r, s)
+
+  Access pattern:
+    I1, D1, D2,   I2, D1, D2,   I3, D1, D2
+    ^^^^^^^^^^^^^  ^^^^^^^^^^^^^  ^^^^^^^^^^^^^
+    outer=I1       outer=I2       outer=I3
+
+  The key insight is about what happens with the INNER relation (D1, D2)
+  which is scanned repeatedly.
+
+  WITH LRU (buffer = 2 frames, just for the inner relation):
+
+    When scanning the inner relation repeatedly, after finishing block D2,
+    the MOST recently used block is D2. The LEAST recently used is D1.
+
+    LRU evicts D1: But D1 is the FIRST block needed in the next scan!
+    Result: D1 is always evicted right before it's needed -> 100% miss rate.
+
+    Pass 1: read D1 (miss), read D2 (miss, evict D1 via LRU)
+    Pass 2: read D1 (MISS!, evict D2), read D2 (MISS!, evict D1)
+    Pass 3: read D1 (MISS!, evict D2), read D2 (MISS!, evict D1)
+    --> Every access is a MISS after the first pass.
+
+  WITH MRU (buffer = 2 frames):
+
+    MRU evicts D2 (the MOST recently used) after each scan.
+    D1 stays in the buffer because it is the LEAST recently used.
+
+    Pass 1: read D1 (miss), read D2 (miss)
+    Pass 2: read D1 (HIT!), read D2 (miss, evict D2 after use via MRU)
+    Pass 3: read D1 (HIT!), read D2 (miss, evict D2 after use)
+    --> D1 always hits! Only D2 is re-read each pass.
+
+    +--------+--------+--------+
+    | Pass   | LRU    | MRU    |
+    |        | misses | misses |
+    +--------+--------+--------+
+    | 1      |  2     |  2     |
+    | 2      |  2     |  1     |  <-- MRU saves 1 miss
+    | 3      |  2     |  1     |
+    | ...    |  2     |  1     |
+    | k      |  2     |  1     |
+    +--------+--------+--------+
+    | Total  | 2k     | k+1    |  <-- MRU roughly halves misses!
+    +--------+--------+--------+
+
+  WHY THIS MATTERS: Database nested-loop joins are extremely common.
+  PostgreSQL actually uses a "ring buffer" strategy for sequential scans
+  to avoid polluting the buffer cache, which is conceptually similar to
+  MRU for this specific access pattern.
+
+
+(b) LRU is preferable to MRU -- INDEX LOOKUPS WITH TEMPORAL LOCALITY:
+
+  Expression: sigma_{dept_name='Physics'}(instructor)
+  Strategy:   Repeated index lookups on dept_name
+
+  Consider a workload of many queries over time:
+    SELECT * FROM instructor WHERE dept_name = 'Physics';
+    SELECT * FROM instructor WHERE dept_name = 'Comp.Sci.';
+    SELECT * FROM instructor WHERE dept_name = 'Physics';   -- again!
+    SELECT * FROM instructor WHERE dept_name = 'Finance';
+    SELECT * FROM instructor WHERE dept_name = 'Physics';   -- again!
+
+  The B+-tree index on dept_name has this structure:
+         +--------+
+         | [Root] |  <-- accessed for EVERY lookup
+         +--------+
+        /          \
+    +------+    +------+
+    | Leaf1|    | Leaf2|   <-- each accessed for specific dept lookups
+    +------+    +------+
+
+  The ROOT block is accessed on every single query.
+
+  WITH LRU:
+    The root block, being accessed most frequently, is always the
+    most recently used. LRU never evicts it. It stays cached.
+    Result: root block always hits -> saves 1 disk read per query.
+
+  WITH MRU:
+    After each lookup, the root block is the most recently used.
+    MRU would evict it to make room for a new block.
+    Next query: root block is gone -> must re-read from disk.
+    Result: root block always misses -> terrible performance.
+
+  VISUAL TRACE (buffer = 2, workload = 4 queries):
+
+    LRU:
+    Q1: read Root (miss), read Leaf1 (miss)
+        buffer: [Root, Leaf1]
+    Q2: read Root (HIT!), read Leaf2 (miss, evict Leaf1 = LRU)
+        buffer: [Root, Leaf2]
+    Q3: read Root (HIT!), read Leaf1 (miss, evict Leaf2 = LRU)
+        buffer: [Root, Leaf1]
+    Q4: read Root (HIT!), read Leaf1 (HIT!)
+        buffer: [Root, Leaf1]
+    Total misses: 4 (Root once, Leaf1 twice, Leaf2 once)
+
+    MRU:
+    Q1: read Root (miss), read Leaf1 (miss)
+        buffer: [Root, Leaf1]
+    Q2: read Root (HIT!), read Leaf2 (miss, evict Root = MRU!)
+        buffer: [Leaf2, Leaf1]
+    Q3: read Root (MISS! evict Leaf2 = MRU), read Leaf1 (HIT!)
+        buffer: [Root, Leaf1]
+    Q4: read Root (HIT!), read Leaf1 (HIT!)
+        buffer: [Root, Leaf1]
+    Total misses: 5 (Root re-read unnecessarily)
+
+    In longer workloads, MRU keeps evicting the root block, causing
+    repeated re-reads.
+
+  SUMMARY:
+  +---------------------+--------------------------------+
+  | Access Pattern      | Better Policy                  |
+  +---------------------+--------------------------------+
+  | Repeated sequential | MRU (cyclic scans of inner     |
+  | scans (nested loop) | relation in joins)             |
+  +---------------------+--------------------------------+
+  | Random with temporal| LRU (index lookups, hot blocks |
+  | locality            | like root nodes stay cached)   |
+  +---------------------+--------------------------------+
+  | One-time sequential | Toss-immediate (neither LRU    |
+  | scan                | nor MRU; just evict right away)|
+  +---------------------+--------------------------------+
+
+  WHY THIS MATTERS: Real database buffer managers don't use a single
+  policy. PostgreSQL uses a CLOCK algorithm (LRU approximation) for
+  general access, but switches to a small ring buffer for sequential
+  scans to avoid evicting hot pages. Oracle uses a "touch count" system.
+  The right policy depends on the access pattern, which is why adaptive
+  algorithms like ARC (Adaptive Replacement Cache) try to combine both.
+
+
+Exercise 13.8
+--------------
+Q: PostgreSQL normally uses a small buffer, leaving it to the operating
+   system buffer manager to manage the rest of main memory available
+   for file system buffering. Explain (a) what is the benefit of this
+   approach, and (b) one key limitation.
+
+A:
+
+BACKGROUND: The Two-Level Buffering Architecture
+
+  +-----------------------------------------------------------+
+  |                    Main Memory (RAM)                       |
+  |                                                           |
+  |  +-------------------+   +-----------------------------+  |
+  |  | PostgreSQL Buffer |   | OS File System Cache        |  |
+  |  | Pool (shared_buf) |   | (managed by kernel)         |  |
+  |  |                   |   |                             |  |
+  |  | Typically 25% of  |   | Uses remaining available    |  |
+  |  | RAM (e.g., 8 GB   |   | RAM (e.g., 24 GB on a      |  |
+  |  | on 32 GB server)  |   | 32 GB server)               |  |
+  |  |                   |   |                             |  |
+  |  | DB-aware eviction |   | Generic LRU eviction        |  |
+  |  +-------------------+   +-----------------------------+  |
+  |         |                          |                      |
+  +---------|--------------------------|----------------------+
+            |                          |
+            +--- read()/write() -------+
+            |
+  +---------v-------------------------------------------------+
+  |                     Disk (SSD/HDD)                        |
+  |  [data files]  [index files]  [WAL files]  [temp files]   |
+  +-----------------------------------------------------------+
+
+  When PostgreSQL reads a page, it goes through TWO layers:
+  1. Check PostgreSQL's own buffer pool (shared_buffers)
+  2. If not found, issue a read() system call
+  3. The OS checks its file system cache
+  4. If not found there, the OS reads from disk
+  5. The page is now in BOTH the OS cache and PostgreSQL's buffer
+
+
+(a) BENEFIT -- Memory Efficiency and Simplicity:
+
+  AVOIDING DOUBLE BUFFERING (mostly):
+    If PostgreSQL used a very large buffer (say 30 GB on a 32 GB server),
+    the same data page might exist in BOTH:
+    - PostgreSQL's 30 GB buffer
+    - OS file cache (using the remaining 2 GB + whatever it reclaims)
+
+    This wastes memory. With a small PostgreSQL buffer (8 GB):
+    - 8 GB for PostgreSQL's direct control
+    - ~24 GB for OS to cache ALL file I/O (including PostgreSQL data,
+      WAL, temp files, AND other processes)
+
+  DYNAMIC MEMORY SHARING:
+    The OS cache automatically adjusts to system needs:
+
+    Scenario 1: PostgreSQL is busy, other apps idle
+      -> OS gives most of 24 GB to caching PostgreSQL's data files
+
+    Scenario 2: A backup job starts, needs memory
+      -> OS shrinks the file cache, gives memory to the backup process
+      -> When backup finishes, cache grows back automatically
+
+    With a large fixed PostgreSQL buffer, this flexibility is lost.
+
+  SIMPLER ADMINISTRATION:
+    DBAs don't need to precisely tune buffer size. The OS handles
+    most caching automatically. PostgreSQL's default shared_buffers
+    is only 128 MB -- it works acceptably out of the box.
+
+  CONCRETE NUMBERS:
+    32 GB server, shared_buffers = 8 GB:
+    +--------------------+--------+----------------------------+
+    | Memory Region      | Size   | What it caches             |
+    +--------------------+--------+----------------------------+
+    | PG shared_buffers  | 8 GB   | Hot data/index pages       |
+    | PG other memory    | 2 GB   | Sort buffers, hash tables  |
+    | OS file cache      | ~20 GB | Everything else (data,     |
+    |                    |        | WAL, temp, other apps)     |
+    | OS + other         | 2 GB   | Kernel, other processes    |
+    +--------------------+--------+----------------------------+
+    Effective "database cache" = 8 + ~20 = ~28 GB (87.5% of RAM)
+
+
+(b) KEY LIMITATION -- Loss of Control Over Replacement Policy:
+
+  PostgreSQL loses the ability to make intelligent eviction decisions
+  for the pages managed by the OS. The OS uses generic LRU (or its
+  variant) and has NO knowledge of database access patterns.
+
+  SPECIFIC PROBLEMS:
+
+  Problem 1: Cannot use MRU for nested-loop join scans
+    PostgreSQL knows that inner-relation pages in a nested loop should
+    use MRU, but the OS cache uses LRU for those same pages.
+
+    PostgreSQL buffer (can use MRU):  8 GB of hot pages
+    OS cache (stuck with LRU):        20 GB of pages with wrong policy
+    --> The 20 GB of OS-cached pages may have terrible hit rates
+        for join-heavy workloads.
+
+  Problem 2: Cannot pin critical pages
+    Index root pages should NEVER be evicted. PostgreSQL can pin them
+    in its own buffer, but if they're also in the OS cache, the OS
+    might evict the OS copy. Next time PostgreSQL evicts them from
+    shared_buffers, re-reading them goes to disk instead of OS cache.
+
+  Problem 3: OS evicts database pages for unrelated I/O
+    If another process (e.g., a log rotation tool) reads a large file,
+    the OS may evict cached database pages to make room:
+
+    BEFORE: OS cache = [DB page 1] [DB page 2] ... [DB page 5000]
+    Admin runs: tar -czf backup.tar.gz /var/log/*   (reads 10 GB of logs)
+    AFTER:  OS cache = [log chunk 1] [log chunk 2] ... [DB page 4999]
+    --> Most database pages evicted! Next queries hit disk.
+
+    PostgreSQL has NO way to prevent this.
+
+  Problem 4: Cannot coordinate write ordering
+    For crash recovery, PostgreSQL needs WAL pages written before data
+    pages (Write-Ahead Logging protocol). The OS cache may write data
+    pages to disk before WAL pages, potentially causing corruption on
+    crash. (PostgreSQL works around this with fsync() calls, but these
+    are expensive.)
+
+  WHY THIS MATTERS: This is why high-performance deployments often:
+  - Use Direct I/O (O_DIRECT) to bypass the OS cache entirely
+    (Oracle and MySQL InnoDB do this by default)
+  - Set vm.dirty_background_ratio low to limit OS cache interference
+  - Use huge pages to prevent the OS from reclaiming PostgreSQL memory
+  PostgreSQL is somewhat unusual in relying heavily on the OS cache;
+  most commercial databases prefer to manage their own large buffer pool
+  with O_DIRECT.
+
+
+========================================
+EXERCISES (13.9 - 13.14)
+========================================
+
+
+Exercise 13.9
+--------------
+Q: In the variable-length record representation, a null bitmap is used
+   to indicate if an attribute has the null value.
+
+(a) For variable-length fields, if the value is null, what would be
+    stored in the offset and length fields?
+
+A:
+
+BACKGROUND: Variable-Length Record Layout
+
+  Consider an instructor record with a nullable department:
+    ID = 10101, name = 'Srinivasan', dept_name = NULL, salary = 65000
+
+  The record layout for variable-length records:
+
+  +-------------------------------------------------------------+
+  |           RECORD HEADER (fixed-length part)                  |
+  +-----+-----+-----+-----+--------+--------+--------+-----+   |
+  |null | off | len | off | len    | off    | len    | ... |   |
+  |bmap | 1   | 1   | 2   | 2      | 3      | 3      |     |   |
+  +-----+-----+-----+-----+--------+--------+--------+-----+   |
+  |           RECORD DATA (variable-length part)                 |
+  | [actual values stored here, referenced by offset+length]     |
+  +-------------------------------------------------------------+
+
+  For the example record (dept_name is NULL):
+  +----------------------------------------------------------------+
+  | Null bitmap: 0 0 1 0     (bit 2 = 1, meaning dept_name is NULL)|
+  +------+------+------+------+------+------+------+------+--------+
+  | off1 | len1 | off2 | len2 | off3 | len3 | off4 | len4 |        |
+  |  24  |   5  |  29  |  10  |   0  |   0  |  39  |   5  |        |
+  +------+------+------+------+------+------+------+------+--------+
+  | Data area:                                                     |
+  | pos 24: "10101"  pos 29: "Srinivasan"  pos 39: "65000"         |
+  +----------------------------------------------------------------+
+                               ^
+                         dept_name (attribute 3):
+                         offset=0, length=0 (IGNORED because
+                         null bitmap bit 2 is set)
+
+  ANSWER: When a variable-length field is null:
+  - The null bitmap bit for that attribute is set to 1.
+  - The offset and length values can be set to 0 (or any arbitrary value),
+    since they will be IGNORED when the null bit is set.
+  - The system checks the null bitmap FIRST. If the bit is 1, it returns
+    NULL immediately without reading the offset/length fields.
+
+  Conventionally, both offset and length are set to 0 for clarity and
+  consistency, but their actual values are irrelevant.
+
+  Alternative: The offset could be set equal to the next field's offset
+  (indicating zero-length data), and length = 0. This preserves the
+  property that offsets are monotonically increasing, which simplifies
+  some parsing logic.
+
+
+(b) Can you modify the record representation so that the only overhead
+    for a null attribute is the single bit in the null bitmap?
+
+A:
+
+  YES. The key idea: DON'T store offset/length entries for null attributes.
+
+  STANDARD APPROACH (wastes space for nulls):
+  +------+------+------+------+------+------+------+------+------+
+  | null | off1 | len1 | off2 | len2 | off3 | len3 | off4 | len4 |
+  | bmap |      |      |      |      |      |      |      |      |
+  +------+------+------+------+------+------+------+------+------+
+  Size: 1 byte bitmap + 4 attributes * 4 bytes = 17 bytes of header
+
+  Even if attributes 2 and 3 are NULL, we still store their (useless)
+  offset/length entries: 2 * 4 = 8 bytes wasted.
+
+
+  OPTIMIZED APPROACH (only store offset/length for non-null attributes):
+  +------+------+------+------+------+
+  | null | off1 | len1 | off4 | len4 |   <-- only 2 entries (non-null)
+  | bmap |      |      |      |      |
+  +------+------+------+------+------+
+  Size: 1 byte bitmap + 2 non-null attributes * 4 bytes = 9 bytes of header
+  Savings: 17 - 9 = 8 bytes per record!
+
+  HOW TO FIND ATTRIBUTE i's DATA:
+
+  Step 1: Check null bitmap bit for attribute i.
+          If 1 (null): return NULL. Done.
+
+  Step 2: Count the number of non-null attributes BEFORE position i.
+          This is a "popcount" of the 0-bits in the bitmap before position i.
+
+  Step 3: Use that count as the index into the (offset, length) array.
+
+  EXAMPLE: Record with 6 attributes, attributes 1, 3, and 5 are null:
+
+  Null bitmap: 0 1 0 1 0 1
+               ^   ^   ^
+            attr0 attr2 attr4  <-- these are NOT null
+
+  To find attribute 4:
+    1. Bitmap bit 4 = 0, so attribute 4 is NOT null.
+    2. Count non-null attributes before position 4:
+       Bits 0-3: 0, 1, 0, 1 --> non-null count = 2 (positions 0 and 2)
+    3. Attribute 4's (offset, length) is at index 2 in the array.
+
+  TRADEOFF ANALYSIS:
+
+  +---------------------+---------------------+---------------------+
+  | Metric              | Standard            | Optimized           |
+  +---------------------+---------------------+---------------------+
+  | Header size         | Fixed (always       | Variable (depends   |
+  | (per record)        | N * 4 bytes)        | on null count)      |
+  +---------------------+---------------------+---------------------+
+  | Space per null attr | 4 bytes (wasted)    | 0 bytes (just 1 bit)|
+  +---------------------+---------------------+---------------------+
+  | Finding attribute i | Direct array lookup | Must count bits     |
+  |                     | at position i: O(1) | (popcount): O(1)*   |
+  +---------------------+---------------------+---------------------+
+  | Implementation      | Simple              | More complex        |
+  +---------------------+---------------------+---------------------+
+
+  * Modern CPUs have a hardware POPCNT instruction that counts bits
+    in a single cycle, so the CPU overhead is negligible.
+
+  WHEN IS THIS WORTH IT?
+
+  Consider a table with 100 attributes where 80% are null on average:
+    Standard:  100 * 4 = 400 bytes of offset/length per record
+    Optimized:  20 * 4 = 80 bytes + 13 bytes bitmap = 93 bytes
+    Savings: 400 - 93 = 307 bytes per record = 77% reduction!
+
+  For a table with 1 million such records:
+    Standard:  400 MB of headers alone
+    Optimized:  93 MB of headers
+    Savings: 307 MB -- that's a LOT of disk space and I/O saved.
+
+  WHY THIS MATTERS: Sparse tables (many null attributes) are common in
+  real-world databases -- user profiles, medical records, IoT sensor data.
+  PostgreSQL uses a variation of this technique: its null bitmap is stored
+  in the tuple header, and null attributes consume zero bytes in the data
+  area. This makes wide, sparse tables practical.
+
+
+Exercise 13.10
+--------------
+Q: Explain why the allocation of records to blocks affects database-
+   system performance significantly.
+
+A:
+
+THE FUNDAMENTAL BOTTLENECK: DISK I/O
+
+  A database server's memory hierarchy:
+  +-----------------------------------------------------+
+  | CPU Cache (L1/L2/L3)  |  ~1 ns access    | 32 MB   |
+  | Main Memory (RAM)     |  ~100 ns access   | 64 GB   |
+  | SSD                   |  ~100,000 ns      | 2 TB    |
+  | Magnetic Disk (HDD)   |  ~10,000,000 ns   | 10 TB   |
+  +-----------------------------------------------------+
+         1 ns                  100 ns           0.1 ms        10 ms
+         |----------------------|-----------------|-------------|
+         CPU                    RAM               SSD           HDD
+                                                100x            100,000x
+                                                slower          slower
+                                                than RAM        than RAM
+
+  The unit of disk I/O is a BLOCK (typically 4 KB or 8 KB). Reading one
+  record or one hundred records from the same block costs the SAME: one
+  block read. This is why record-to-block allocation matters so much.
+
+
+CONCRETE EXAMPLE using the instructor table:
+
+  Assume: 12 instructor records, 64 bytes each, block size = 256 bytes
+  So: 4 records fit per block = 3 blocks total.
+
+  QUERY: SELECT * FROM instructor WHERE dept_name = 'Comp.Sci.';
+  (Three matching records: Srinivasan, Katz, Brandt)
+
+  ALLOCATION A -- Records clustered by dept_name:
+  +-----------------------------------+
+  | Block 0: Comp.Sci. records        |
+  | [Srinivasan] [Katz] [Brandt] [--] |  <-- all 3 matches HERE
+  +-----------------------------------+
+  | Block 1: Finance + Physics        |
+  | [Wu] [Singh] [Einstein] [Gold]    |
+  +-----------------------------------+
+  | Block 2: Others                   |
+  | [Mozart] [El Said] [Califieri]    |
+  | [Crick] [Kim]                     |
+  +-----------------------------------+
+
+  I/Os needed: 1 block read (Block 0 has all 3 records)
+
+  ALLOCATION B -- Records in insertion order (scattered):
+  +-----------------------------------+
+  | Block 0                           |
+  | [Srinivasan*] [Wu] [Mozart]       |
+  | [Einstein]                        |  <-- 1 match
+  +-----------------------------------+
+  | Block 1                           |
+  | [El Said] [Gold] [Katz*]          |
+  | [Califieri]                       |  <-- 1 match
+  +-----------------------------------+
+  | Block 2                           |
+  | [Singh] [Crick] [Brandt*] [Kim]   |  <-- 1 match
+  +-----------------------------------+
+
+  I/Os needed: 3 block reads (one match per block)
+
+  PERFORMANCE DIFFERENCE:
+  Allocation A: 1 I/O * 0.1 ms (SSD) = 0.1 ms
+  Allocation B: 3 I/O * 0.1 ms (SSD) = 0.3 ms  (3x slower)
+
+  On magnetic disk:
+  Allocation A: 1 I/O * 10 ms = 10 ms
+  Allocation B: 3 I/O * 10 ms = 30 ms  (3x slower)
+
+
+FIVE WAYS ALLOCATION AFFECTS PERFORMANCE:
+
+  1. SEQUENTIAL vs RANDOM ACCESS:
+
+     Full table scan (SELECT * FROM instructor):
+
+     Contiguous allocation:       Scattered allocation:
+     [B0]->[B1]->[B2]             [B0]...[B5]...[B12]...
+     Sequential I/O               Random I/O
+     ~30 MB/s (HDD seq)           ~1 MB/s (HDD random)
+     30x faster!                  30x slower!
+
+     On SSDs the gap is smaller (~4x) but still significant.
+
+  2. BUFFER HIT RATE:
+
+     If frequently co-accessed records share blocks:
+       Query for Comp.Sci. instructors: loads 1 block
+       Buffer holds Block 0: [Srinivasan, Katz, Brandt]
+       Next query for any of these 3 -> buffer HIT (no I/O)
+
+     If scattered across 3 blocks:
+       Buffer holds 3 blocks but each block is only 33% "useful"
+       Effective buffer utilization drops by 3x
+
+  3. JOIN PERFORMANCE (Multitable Clustering):
+
+     Query: SELECT i.name, d.building
+            FROM instructor i JOIN department d
+            ON i.dept_name = d.dept_name
+            WHERE i.dept_name = 'Comp.Sci.';
+
+     Without clustering:
+       Read instructor block (1 I/O) + read department block (1 I/O) = 2 I/Os
+
+     With clustering (instructor + department on same block):
+       Read 1 block containing both = 1 I/O (50% fewer)
+
+  4. SPACE UTILIZATION:
+
+     Fragmented file (many deletions, no compaction):
+     [B0: 25% full] [B1: 50% full] [B2: 75% full] [B3: 10% full]
+     Average utilization: 40%
+     Blocks needed for 12 records: 3 / 0.4 = ~8 blocks
+
+     Compacted file:
+     [B0: 100% full] [B1: 100% full] [B2: 100% full]
+     Blocks needed: 3
+
+     A full table scan reads 8 blocks vs 3 blocks = 2.7x more I/O.
+
+  5. PREFETCHING EFFECTIVENESS:
+
+     Modern disk controllers and SSDs prefetch sequential blocks:
+     If blocks are contiguous: prefetcher reads ahead, hiding latency
+     If blocks are scattered: prefetcher reads wrong blocks, no benefit
+
+  WHY THIS MATTERS: This is why databases spend enormous effort on
+  record placement. Oracle's CLUSTER command, PostgreSQL's CLUSTER
+  command (reorders table by an index), MySQL InnoDB's clustered index
+  (physically orders rows by primary key), and columnar stores all
+  exist because of this fundamental truth: which records share a block
+  determines how many I/Os a query needs.
+
+
+Exercise 13.11
+--------------
+Q: List two advantages and two disadvantages of each of the following
+   strategies for storing a relational database:
+   a. Store each relation in one file.
+   b. Store multiple relations (perhaps even the entire database) in
+      one file.
+
+A:
+
+(a) STORE EACH RELATION IN ONE FILE:
+
+  Visualization:
+  +------------------+
+  | Operating System |
+  | File System      |
+  +------------------+
+  |                  |
+  |  instructor.dat  |  <-- one file
+  |  department.dat  |  <-- one file
+  |  course.dat      |  <-- one file
+  |  takes.dat       |  <-- one file
+  |  section.dat     |  <-- one file
+  |  ...             |
+  +------------------+
+
+  Example SQL and what happens at the file level:
+
+    SELECT * FROM instructor;
+    --> Open instructor.dat, sequential scan, close.
+
+    DROP TABLE takes;
+    --> Delete takes.dat. Done!
+
+    SELECT * FROM instructor NATURAL JOIN department;
+    --> Open instructor.dat AND department.dat,
+        read both files, join in memory.
+
+  ADVANTAGES:
+
+  1. SIMPLICITY AND INDEPENDENCE:
+     - Each file = one relation. Easy to understand, manage, back up.
+     - DROP TABLE = delete file. TRUNCATE = truncate file. Simple!
+     - Can move a single relation to a different disk/tablespace easily:
+         mv instructor.dat /fast_ssd/
+         ln -s /fast_ssd/instructor.dat instructor.dat
+
+  2. EFFICIENT SINGLE-TABLE SCANS:
+     - SELECT * FROM instructor reads ONLY instructor data.
+     - No irrelevant records from other relations mixed in.
+     - Every byte read from disk is useful for the query.
+
+     Example: instructor.dat = 3 blocks, all instructor records.
+     Full scan: 3 block reads, 0 wasted reads.
+
+  DISADVANTAGES:
+
+  1. NO MULTITABLE CLUSTERING:
+     Cannot co-locate related records from different relations.
+
+     Query: SELECT i.name, d.building
+            FROM instructor i JOIN department d
+            ON i.dept_name = d.dept_name;
+
+     Must read instructor.dat (3 blocks) + department.dat (2 blocks)
+     = 5 block reads minimum.
+
+     With multitable clustering, this could be 3 block reads (each block
+     has instructor records and their matching department record).
+
+  2. FILE SYSTEM OVERHEAD:
+     A database with 500 relations = 500 open files.
+
+     OS limitations:
+     +----------------------------+-------------------+
+     | Resource                   | Impact            |
+     +----------------------------+-------------------+
+     | Open file descriptors      | Default limit:    |
+     |                            | 1024 per process  |
+     | Directory entries          | Slow ls/readdir   |
+     |                            | with 1000s files  |
+     | Per-file metadata (inodes) | Wastes inode space|
+     | Per-file free space mgmt   | OS maintains each |
+     +----------------------------+-------------------+
+
+     Many small files also prevent the OS from optimizing disk layout
+     across the entire database.
+
+
+(b) STORE MULTIPLE RELATIONS IN ONE FILE:
+
+  Visualization:
+  +------------------------------------------+
+  | database.dat (single file)               |
+  +------------------------------------------+
+  | Block 0: [instructor] Srinivasan ...     |
+  | Block 1: [instructor] Wu ...             |
+  | Block 2: [department] Comp.Sci. ...      |
+  | Block 3: [department] Finance ...        |
+  | Block 4: [instructor] El Said ...        |  <-- interleaved!
+  | Block 5: [course] CS-101 ...             |
+  | ...                                      |
+  +------------------------------------------+
+
+  Or with multitable clustering:
+  +------------------------------------------+
+  | database.dat (clustered on dept_name)    |
+  +------------------------------------------+
+  | Block 0: [department] Comp.Sci. Taylor   |
+  |          [instructor] Srinivasan 65000   |
+  |          [instructor] Katz       75000   |
+  |          [instructor] Brandt     92000   |
+  | Block 1: [department] Finance  Painter   |
+  |          [instructor] Wu        90000    |
+  |          [instructor] Singh     80000    |
+  | ...                                      |
+  +------------------------------------------+
+
+  ADVANTAGES:
+
+  1. MULTITABLE CLUSTERING:
+     Records from related tables can share the same block.
+
+     Query: SELECT i.name, d.building
+            FROM instructor i JOIN department d
+            ON i.dept_name = d.dept_name
+            WHERE d.dept_name = 'Comp.Sci.';
+
+     With clustering: Read Block 0 only = 1 I/O
+     (Block 0 has the Comp.Sci. department record AND all its instructors)
+
+  2. FEWER FILE DESCRIPTORS AND OS OVERHEAD:
+     One file for the entire database:
+     - Only 1 file descriptor needed
+     - Only 1 set of OS file metadata
+     - The database engine has full control over block allocation
+     - Can optimize physical block placement across the entire database
+     - Simpler backup: copy 1 file
+
+  DISADVANTAGES:
+
+  1. SINGLE-RELATION SCAN OVERHEAD:
+     Scanning one relation must read blocks containing other relations.
+
+     SELECT * FROM instructor;
+
+     Without clustering: instructor records might be scattered across
+     many blocks, each also containing department/course records:
+
+     Block 0: [dept] [inst] [inst] [course]  <-- 2 useful, 2 wasted
+     Block 1: [inst] [course] [course] [inst] <-- 2 useful, 2 wasted
+     Block 2: [dept] [dept] [inst] [inst]    <-- 2 useful, 2 wasted
+
+     Reads 3 blocks but only 50% of data is relevant. Compare with
+     separate files where 100% of data is relevant.
+
+  2. COMPLEX INTERNAL MANAGEMENT:
+     The database must manage its own "file system within a file":
+
+     +--------------------------------------------------+
+     | Internal metadata the database must maintain:    |
+     +--------------------------------------------------+
+     | - Which blocks belong to which relation          |
+     | - Free space map across all relations             |
+     | - Block chains linking records of the same type   |
+     | - Type tags in each record to identify its table  |
+     | - Internal fragmentation tracking                 |
+     +--------------------------------------------------+
+
+     This is essentially building a mini file system inside a single file.
+     More code, more bugs, more maintenance effort.
+
+  SUMMARY TABLE:
+  +---------------------+-----------+-----------+
+  | Feature             | Separate  | Single    |
+  |                     | Files     | File      |
+  +---------------------+-----------+-----------+
+  | Join performance    | Worse     | Better    |
+  | Single-table scan   | Better    | Worse     |
+  | Simplicity          | Simpler   | Complex   |
+  | DROP TABLE          | Instant   | Complex   |
+  | Multitable cluster  | No        | Yes       |
+  | File descriptors    | Many      | One       |
+  | Backup granularity  | Per-table | All or    |
+  |                     |           | nothing   |
+  +---------------------+-----------+-----------+
+
+  WHY THIS MATTERS: Most modern databases use a HYBRID approach:
+  - Oracle: Uses tablespaces (one file for multiple relations)
+  - PostgreSQL: One file per relation (with segments for large tables)
+  - MySQL InnoDB: Configurable -- innodb_file_per_table (default ON since 5.6)
+    or shared tablespace (ibdata1)
+  - SQLite: Entire database in a single file
+
+  The choice reflects different priorities: PostgreSQL values simplicity
+  and per-table management; Oracle values clustering and space control.
+
+
+Exercise 13.12
+--------------
+Q: In the sequential file organization, why is an overflow block used
+   even if there is, at the moment, only one overflow record?
+
+A:
+
+BACKGROUND: Sequential File Organization
+
+  Records are stored in search-key order across blocks. For example,
+  instructor records ordered by name:
+
+  Block 0 (capacity: 3 records):
+  +-----------------------------------+
+  | [Brandt]  [Califieri]  [Crick]    |  <-- full!
+  +-----------------------------------+
+                  |
+                  v (pointer to next block)
+  Block 1:
+  +-----------------------------------+
+  | [Einstein] [El Said] [Gold]       |  <-- full!
+  +-----------------------------------+
+                  |
+                  v
+  Block 2:
+  +-----------------------------------+
+  | [Katz]  [Kim]  [Mozart]           |  <-- full!
+  +-----------------------------------+
+                  |
+                  v
+  Block 3:
+  +-----------------------------------+
+  | [Singh] [Srinivasan] [Wu]         |  <-- full!
+  +-----------------------------------+
+
+
+THE PROBLEM: Insert "Dalton" (should go between Califieri and Crick)
+
+  Dalton belongs in Block 0, but Block 0 is FULL (3/3 records).
+
+  Option 1: SHIFT EVERYTHING DOWN (no overflow block):
+
+  Step 1: Push Crick out of Block 0 to make room for Dalton
+  Step 2: Crick goes to Block 1, pushing Gold out
+  Step 3: Gold goes to Block 2, pushing Mozart out
+  Step 4: Mozart goes to Block 3, pushing Wu out
+  Step 5: Wu goes to a new Block 4
+
+  BEFORE:
+  B0: [Brandt] [Califieri] [Crick]
+  B1: [Einstein] [El Said] [Gold]
+  B2: [Katz] [Kim] [Mozart]
+  B3: [Singh] [Srinivasan] [Wu]
+
+  AFTER:
+  B0: [Brandt] [Califieri] [Dalton]    <-- inserted
+  B1: [Crick] [Einstein] [El Said]     <-- shifted
+  B2: [Gold] [Katz] [Kim]              <-- shifted
+  B3: [Mozart] [Singh] [Srinivasan]    <-- shifted
+  B4: [Wu]                             <-- new block
+
+  Records moved: 9 (every record after Califieri)
+  Blocks read:   4
+  Blocks written: 5
+  Total I/Os: 9   <-- VERY EXPENSIVE for inserting 1 record!
+
+  Also: every index entry for the 9 moved records must be updated.
+
+
+  Option 2: USE AN OVERFLOW BLOCK (even for just 1 record):
+
+  B0: [Brandt] [Califieri] [Crick]
+           |
+           +--> Overflow block for B0:
+                [Dalton]               <-- 1 record in overflow
+
+  Structure:
+  +-----------------------------------+
+  | Block 0                           |
+  | [Brandt] [Califieri] [Crick]      |
+  | overflow_ptr --+                  |
+  +----------------|------------------+
+                   |
+                   v
+  +-----------------------------------+
+  | Overflow Block 0a                 |
+  | [Dalton] [__empty__] [__empty__]  |
+  | overflow_ptr --> NULL             |
+  +-----------------------------------+
+
+  Records moved: 0
+  Blocks read:   1 (Block 0, to find insertion point)
+  Blocks written: 1 (new overflow block)
+  Total I/Os: 2   <-- MUCH cheaper!
+
+  No index updates needed for existing records.
+
+
+  COMPARISON:
+  +----------------------------+-----------+------------------+
+  | Metric                     | No overflow| With overflow   |
+  |                            | (shift)    | (1 record)      |
+  +----------------------------+-----------+------------------+
+  | Records moved              | 9         | 0                |
+  | Block reads                | 4         | 1                |
+  | Block writes               | 5         | 1                |
+  | Total I/Os                 | 9         | 2                |
+  | Index updates              | 9         | 0 (or 1 new)     |
+  | Maintains sort order       | Yes       | Yes (with chain) |
+  +----------------------------+-----------+------------------+
+
+
+WHY USE AN OVERFLOW BLOCK EVEN FOR 1 RECORD?
+
+  1. THE MAIN BLOCK IS FULL: There is literally no room to insert the
+     record. We cannot simply "squeeze it in."
+
+  2. CASCADING SHIFTS ARE PROHIBITIVELY EXPENSIVE: Moving records to the
+     next block cascades through the entire file. For a file with 1 million
+     blocks, inserting at the beginning would shift ~3 million records.
+
+  3. THE OVERFLOW BLOCK CAN ABSORB FUTURE INSERTIONS: If we later insert
+     "Davis" and "Drake" (also between Califieri and Crick), they go into
+     the same overflow block -- no additional block allocation needed.
+
+     After inserting Davis and Drake:
+     +-----------------------------------+
+     | Block 0                           |
+     | [Brandt] [Califieri] [Crick]      |
+     | overflow_ptr --+                  |
+     +----------------|------------------+
+                      v
+     +-----------------------------------+
+     | Overflow Block 0a                 |
+     | [Dalton] [Davis] [Drake]          |  <-- 3 records, block full
+     +-----------------------------------+
+
+  4. MAINTAINING THE POINTER CHAIN STRUCTURE: The sequential file uses
+     block pointers to link blocks in order. The overflow block is linked
+     to its main block, maintaining the logical ordering without physical
+     reordering.
+
+  WHEN TO REORGANIZE: Periodically (e.g., during off-peak hours), the
+  file is reorganized: overflow records are merged back into the main
+  blocks, restoring pure sequential order. This is analogous to
+  PostgreSQL's CLUSTER command or Oracle's ALTER TABLE MOVE.
+
+  WHY THIS MATTERS: This tradeoff between insertion cost and read
+  performance is fundamental to database storage. B+-trees solve this
+  more elegantly with split/merge operations, which is why B+-trees
+  have largely replaced sequential file organization for indexed access.
+  But understanding overflow blocks helps explain why periodic
+  reorganization/compaction is necessary in all storage engines.
+
+
+Exercise 13.13
+--------------
+Q: Give a normalized version of the Index_metadata relation, and
+   explain why using the normalized version would result in worse
+   performance.
+
+A:
+
+BACKGROUND: The Data Dictionary
+
+  Every database maintains a "data dictionary" (also called the system
+  catalog) that stores metadata about all tables, indexes, columns, etc.
+  The system consults this metadata for EVERY query -- to find which
+  indexes exist, which columns a table has, etc.
+
+  Example metadata access for a simple query:
+    SELECT * FROM instructor WHERE dept_name = 'Physics';
+
+    The database must check:
+    1. Does table "instructor" exist? (look up Relation_metadata)
+    2. Does it have column "dept_name"? (look up column metadata)
+    3. Is there an index on dept_name? (look up Index_metadata)
+    4. What type of index? B+-tree? Hash? (look up Index_metadata)
+    5. Which columns does the index cover? (look up Index_metadata)
+
+    ALL of these lookups happen BEFORE a single data row is read!
+
+
+ORIGINAL (non-normalized) Index_metadata relation:
+
+  +----------------+---------------+------------+-------------------------+
+  | index_name     | relation_name | index_type | index_attributes        |
+  +----------------+---------------+------------+-------------------------+
+  | idx_inst_dept  | instructor    | B+-tree    | dept_name               |
+  | idx_inst_sal   | instructor    | B+-tree    | salary                  |
+  | idx_dept_bldg  | department    | B+-tree    | dept_name, building     |
+  | idx_takes_yr   | takes         | B+-tree    | year, semester          |
+  | idx_course_hash| course        | Hash       | course_id               |
+  +----------------+---------------+------------+-------------------------+
+
+  Note: index_attributes contains a COMMA-SEPARATED LIST of attribute names.
+  This violates 1NF (First Normal Form) because it's a non-atomic value.
+
+  For example, "dept_name, building" is a multi-valued field.
+
+
+NORMALIZED VERSION:
+
+  Split into two relations:
+
+  Index_info(index_name, relation_name, index_type)
+  +----------------+---------------+------------+
+  | index_name     | relation_name | index_type |
+  +----------------+---------------+------------+
+  | idx_inst_dept  | instructor    | B+-tree    |
+  | idx_inst_sal   | instructor    | B+-tree    |
+  | idx_dept_bldg  | department    | B+-tree    |
+  | idx_takes_yr   | takes         | B+-tree    |
+  | idx_course_hash| course        | Hash       |
+  +----------------+---------------+------------+
+
+  Index_attribute(index_name, attribute_name, attribute_order)
+  +----------------+----------------+-----------------+
+  | index_name     | attribute_name | attribute_order |
+  +----------------+----------------+-----------------+
+  | idx_inst_dept  | dept_name      | 1               |
+  | idx_inst_sal   | salary         | 1               |
+  | idx_dept_bldg  | dept_name      | 1               |  <-- composite
+  | idx_dept_bldg  | building       | 2               |  <-- key: 2 rows
+  | idx_takes_yr   | year           | 1               |  <-- composite
+  | idx_takes_yr   | semester       | 2               |  <-- key: 2 rows
+  | idx_course_hash| course_id      | 1               |
+  +----------------+----------------+-----------------+
+
+  attribute_order indicates the position in the composite search key.
+
+
+WHY THE NORMALIZED VERSION PERFORMS WORSE:
+
+  Consider the query optimizer checking for useful indexes:
+    "Is there an index on instructor(dept_name)?"
+
+  WITH THE ORIGINAL (denormalized) VERSION:
+    One lookup:
+      SELECT index_type, index_attributes
+      FROM Index_metadata
+      WHERE relation_name = 'instructor';
+
+    Returns 2 rows. Parse the index_attributes strings.
+    I/O: 1 block read (likely cached).
+    CPU: String parsing.
+
+  WITH THE NORMALIZED VERSION:
+    Must JOIN two relations:
+      SELECT i.index_name, i.index_type, a.attribute_name, a.attribute_order
+      FROM Index_info i JOIN Index_attribute a ON i.index_name = a.index_name
+      WHERE i.relation_name = 'instructor'
+      ORDER BY i.index_name, a.attribute_order;
+
+    Returns 2 rows from Index_info + 2 rows from Index_attribute = 4 total.
+    I/O: 2 block reads (one from each table).
+    CPU: Join computation + sorting.
+
+  PERFORMANCE COMPARISON:
+  +---------------------------+--------------------+--------------------+
+  | Metric                    | Denormalized       | Normalized         |
+  +---------------------------+--------------------+--------------------+
+  | Tables accessed           | 1                  | 2                  |
+  | Block reads               | 1                  | 2                  |
+  | Join needed?              | No                 | Yes                |
+  | String parsing needed?    | Yes (split by ',') | No                 |
+  | Rows returned             | 2                  | 4                  |
+  +---------------------------+--------------------+--------------------+
+
+  This seems like a small difference, but consider the FREQUENCY:
+
+  The data dictionary is consulted for EVERY SINGLE QUERY. In a busy
+  OLTP system doing 10,000 queries/second:
+
+  Denormalized: 10,000 * 1 block read  = 10,000 block reads/sec (of metadata)
+  Normalized:   10,000 * 2 block reads = 20,000 block reads/sec (of metadata)
+
+  That is 10,000 extra block reads per second -- just for metadata!
+
+  Even if the blocks are cached in memory (which they will be), the
+  join computation adds CPU overhead: hash lookups, tuple comparisons,
+  result materialization -- all multiplied by 10,000 queries/second.
+
+
+WHY NORMALIZATION'S BENEFITS DON'T APPLY HERE:
+
+  Normalization prevents update anomalies. But:
+
+  1. Index metadata is RARELY UPDATED:
+     - CREATE INDEX: happens maybe once a week
+     - DROP INDEX: happens maybe once a month
+     - The 1NF violation (comma-separated attributes) causes no practical
+       update anomalies because the data almost never changes.
+
+  2. The multi-valued attribute is SMALL AND BOUNDED:
+     - Composite indexes rarely have more than 4-5 attributes.
+     - The comma-separated string is short and fast to parse.
+
+  3. READ-HEAVY WORKLOAD:
+     - 99.999% of data dictionary accesses are READS (for query planning).
+     - Normalization optimizes for WRITES (preventing anomalies).
+     - For a read-heavy workload, denormalization is the right choice.
+
+  WHY THIS MATTERS: This is why system catalogs in real databases are
+  often denormalized. PostgreSQL's pg_index catalog, for example, stores
+  the index column numbers as an array (int2vector) in a single row --
+  a deliberate 1NF violation for performance. Oracle's data dictionary
+  views (ALL_INDEXES, ALL_IND_COLUMNS) are separate, but the underlying
+  storage is optimized for fast access. The lesson: normalization rules
+  are guidelines, not laws. When the workload is overwhelmingly reads
+  and updates are rare, denormalization wins.
+
+
+Exercise 13.14
+--------------
+Q: Standard buffer managers assume each block is of the same size and
+   costs the same to read. Consider a buffer manager that uses the rate
+   of reference of objects (how often accessed in the last n seconds).
+   Suppose we want to store objects of varying sizes and varying read
+   costs. Suggest how a buffer manager may choose which block to evict.
+
+A:
+
+BACKGROUND: Why Standard Eviction Policies Fall Short
+
+  Standard LRU/MRU assumes:
+  - All blocks are the same size (e.g., 4 KB)
+  - All blocks cost the same to fetch from storage
+  - Evicting any block frees the same amount of space
+
+  But in real systems, objects may vary:
+  +------------------+--------+-----------+----------------------------+
+  | Object           | Size   | Read Cost | Example                    |
+  +------------------+--------+-----------+----------------------------+
+  | Index root page  | 8 KB   | 0.1 ms    | B+-tree root (on SSD)      |
+  | Data page        | 8 KB   | 0.1 ms    | instructor table page      |
+  | LOB (large obj)  | 1 MB   | 5.0 ms    | Student photo              |
+  | Remote page      | 8 KB   | 50.0 ms   | Page from remote DB node   |
+  | Compressed page  | 2 KB   | 0.1 ms    | Compressed column data     |
+  +------------------+--------+-----------+----------------------------+
+
+  If we use plain LRU, we might evict the index root page (small,
+  cheap, but accessed 1000x/sec) to make room for a student photo
+  (large, used once). Terrible decision!
+
+
+THE COST-BENEFIT EVICTION FORMULA:
+
+  For each cached object, compute a "value density":
+
+                   r * c
+  value(obj) = ---------
+                   s
+
+  Where:
+    r = rate of reference (accesses per second in the last n seconds)
+    c = cost to re-fetch from storage (in milliseconds)
+    s = size of the object (in KB)
+
+  Interpretation:
+    r * c = expected cost saved per second by keeping this object cached
+            (how often we'd pay the re-fetch cost if we evict it)
+    / s   = normalized by space occupied (cost savings per KB of buffer)
+
+  EVICT the object with the LOWEST value density.
+
+
+WORKED EXAMPLE:
+
+  Buffer capacity: 2 MB = 2048 KB. Currently full with 4 objects:
+
+  +--------+------+-------+------+-------------------------+---------+
+  | Object | r    | c     | s    | value = r * c / s       | Action  |
+  |        | /sec | (ms)  | (KB) |                         |         |
+  +--------+------+-------+------+-------------------------+---------+
+  | A:     | 100  | 0.1   | 8    | 100 * 0.1 / 8   = 1.25 | Keep    |
+  | Index  |      |       |      | (hot, small)            |         |
+  | root   |      |       |      |                         |         |
+  +--------+------+-------+------+-------------------------+---------+
+  | B:     | 0.5  | 0.1   | 1024 | 0.5 * 0.1 / 1024       | EVICT   |
+  | Student|      |       |      | = 0.0000488             | (cold,  |
+  | photo  |      |       |      | (cold, huge, cheap)     | huge)   |
+  +--------+------+-------+------+-------------------------+---------+
+  | C:     | 5    | 50.0  | 8    | 5 * 50 / 8    = 31.25   | Keep    |
+  | Remote |      |       |      | (expensive to re-fetch!) |        |
+  | page   |      |       |      |                         |         |
+  +--------+------+-------+------+-------------------------+---------+
+  | D:     | 20   | 0.1   | 8    | 20 * 0.1 / 8  = 0.25   | Keep    |
+  | Data   |      |       |      | (moderately hot)        | (but    |
+  | page   |      |       |      |                         | 2nd     |
+  |        |      |       |      |                         | lowest) |
+  +--------+------+-------+------+-------------------------+---------+
+
+  Decision: EVICT Object B (student photo).
+    - value = 0.0000488 (lowest by far)
+    - It's cold (0.5 accesses/sec), cheap to re-read (0.1 ms), and HUGE (1 MB)
+    - Evicting it frees 1024 KB of buffer for other objects
+
+  Object C is kept despite being accessed only 5 times/sec because
+  re-fetching it costs 50 ms (it's on a remote node). Evicting it
+  would cost 5 * 50 = 250 ms/sec of re-read overhead.
+
+  VISUAL RANKING (highest value = most worth keeping):
+
+    Object C:  |=============================== 31.25     KEEP (remote, expensive)
+    Object A:  |==  1.25                                  KEEP (index root, hot)
+    Object D:  |  0.25                                    KEEP (data page, warm)
+    Object B:  |  0.0000488                               EVICT! (photo, cold+huge)
+
+
+ANALOGY:
+
+  Think of buffer space like shelf space in a convenience store:
+  - Object A (index root) = chewing gum: tiny, sells 100/day,
+    cheap to restock. Profit/shelf-inch = high. KEEP.
+  - Object B (student photo) = 50-lb bag of rice: huge, sells 1/week,
+    cheap to restock. Profit/shelf-inch = tiny. REMOVE from shelf.
+  - Object C (remote page) = imported wine: small, sells 5/week,
+    but costs $50 to reorder from Italy. Profit/shelf-inch = very high. KEEP.
+
+
+IMPLEMENTATION:
+
+  Data structure: Min-heap (priority queue) keyed on value density.
+
+  +------------------------------------------+
+  |            Min-Heap                      |
+  |                                          |
+  |              [B: 0.00005]  <-- min       |
+  |             /            \               |
+  |      [D: 0.25]       [A: 1.25]          |
+  |       /                                  |
+  |  [C: 31.25]                              |
+  +------------------------------------------+
+
+  Operations:
+  +----------------------+------+------------------------------+
+  | Operation            | Cost | Description                  |
+  +----------------------+------+------------------------------+
+  | Find victim to evict | O(1) | Extract min from heap        |
+  | Update on access     |O(logn)| Update r, recompute value,  |
+  |                      |      | re-heapify                   |
+  | Insert new object    |O(logn)| Insert into heap             |
+  +----------------------+------+------------------------------+
+
+  RATE OF REFERENCE TRACKING:
+  Use an exponential moving average to track r:
+
+    r_new = alpha * r_current + (1 - alpha) * r_old
+
+  Where alpha is a decay factor (e.g., 0.9). This ensures that:
+  - Recent access patterns weigh more heavily
+  - Objects that were hot but cooled down get lower r values
+  - The system adapts to changing workload patterns
+
+  Alternatively, use a sliding window counter:
+    r = (number of accesses in the last n seconds) / n
+
+  EXAMPLE OVER TIME:
+    Time 0: Object X accessed 100 times/sec (r=100) -> value = high
+    Time 1: Workload shifts, X now accessed 2 times/sec (r=2) -> value drops
+    Time 2: X's value is now low enough to be evicted -> freed for new data
+
+  REAL-WORLD CONNECTIONS:
+  - This is essentially the Greedy-Dual-Size-Frequency (GDSF) algorithm,
+    widely used in web proxy caches (e.g., Squid proxy).
+  - Web caches face the same problem: objects (web pages, images) have
+    varying sizes (1 KB to 10 MB) and varying fetch costs (1 ms for CDN,
+    500 ms for origin server).
+  - Database systems with tiered storage (SSD + HDD + remote) also face
+    varying read costs, making this approach highly relevant.
+  - Oracle's buffer cache uses a "touch count" mechanism that is a
+    simplified version of this idea (tracking r but not c or s).
+
+  WHY THIS MATTERS: As databases increasingly span multiple storage tiers
+  (DRAM, NVMe SSD, SATA SSD, HDD, remote/cloud storage), the assumption
+  that "all blocks cost the same to read" breaks down. A page on local
+  NVMe costs 0.02 ms to read; the same page on S3 costs 20 ms. A smart
+  buffer manager that accounts for these differences can dramatically
+  reduce query latency by keeping expensive-to-refetch objects cached
+  while freely evicting cheap-to-refetch ones.
+
+
+========================================
+END OF CHAPTER 13 SOLUTIONS
+========================================

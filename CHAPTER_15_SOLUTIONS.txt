@@ -1,0 +1,2481 @@
+================================================================================
+  CHAPTER 15: QUERY PROCESSING - COMPLETE EXERCISE SOLUTIONS
+  Database System Concepts, 7th Edition (Silberschatz, Korth, Sudarshan)
+================================================================================
+
+  Cost Model Reference:
+    Cost = b * t_T + S * t_S
+    where b = blocks transferred, S = seeks
+    t_S = 4 ms (seek time), t_T = 0.1 ms (transfer time) for magnetic disk
+
+================================================================================
+  PRACTICE EXERCISE 15.1 — External Sort-Merge Trace
+================================================================================
+
+Problem: Sort these tuples on first attribute (alphabetically).
+Memory = 3 blocks, 1 tuple per block.
+
+Input tuples:
+  (kangaroo,17) (wallaby,21) (emu,1) (wombat,13) (platypus,3) (lion,8)
+  (warthog,4)  (zebra,11)   (meerkat,6) (hyena,9) (hornbill,2) (baboon,12)
+
+STEP 1: CREATE INITIAL SORTED RUNS
+-----------------------------------
+Memory holds 3 blocks = 3 tuples. Read 3 tuples at a time, sort in memory,
+write as a run.
+
+  Run 1: read (kangaroo,17),(wallaby,21),(emu,1)
+         sort -> (emu,1), (kangaroo,17), (wallaby,21)
+
+  Run 2: read (wombat,13),(platypus,3),(lion,8)
+         sort -> (lion,8), (platypus,3), (wombat,13)
+
+  Run 3: read (warthog,4),(zebra,11),(meerkat,6)
+         sort -> (meerkat,6), (warthog,4), (zebra,11)
+
+  Run 4: read (hyena,9),(hornbill,2),(baboon,12)
+         sort -> (baboon,12), (hornbill,2), (hyena,9)
+
+After Pass 0 (run creation):
+  +---------------------------+
+  | Run 1: emu, kangaroo, wallaby       |
+  | Run 2: lion, platypus, wombat       |
+  | Run 3: meerkat, warthog, zebra      |
+  | Run 4: baboon, hornbill, hyena      |
+  +---------------------------+
+
+Number of initial runs: ceil(12/3) = 4 runs
+
+STEP 2: MERGE PASSES
+---------------------
+M = 3 blocks. During merge, we use M-1 = 2 blocks for input, 1 for output.
+So we can merge 2 runs at a time.
+
+PASS 1: Merge pairs of runs (2-way merge)
+..........................................
+
+  Merge Run 1 + Run 2:
+    Inputs: [emu, kangaroo, wallaby] and [lion, platypus, wombat]
+
+    Compare emu vs lion -> emu wins
+    Compare kangaroo vs lion -> kangaroo wins
+    Compare wallaby vs lion -> lion wins
+    Compare wallaby vs platypus -> platypus wins
+    Compare wallaby vs wombat -> wallaby wins
+    Remaining: wombat
+
+    Result Run A: (emu,1),(kangaroo,17),(lion,8),(platypus,3),(wallaby,21),(wombat,13)
+
+  Merge Run 3 + Run 4:
+    Inputs: [meerkat, warthog, zebra] and [baboon, hornbill, hyena]
+
+    Compare meerkat vs baboon -> baboon wins
+    Compare meerkat vs hornbill -> hornbill wins
+    Compare meerkat vs hyena -> hyena wins
+    Compare meerkat vs (end of Run4) -> meerkat wins
+    Remaining: warthog, zebra
+
+    Result Run B: (baboon,12),(hornbill,2),(hyena,9),(meerkat,6),(warthog,4),(zebra,11)
+
+After Pass 1:
+  +------------------------------------------------------+
+  | Run A: emu, kangaroo, lion, platypus, wallaby, wombat |
+  | Run B: baboon, hornbill, hyena, meerkat, warthog, zebra |
+  +------------------------------------------------------+
+
+PASS 2: Final merge (2-way merge of Run A + Run B)
+...................................................
+
+    A: emu      B: baboon    -> baboon wins
+    A: emu      B: hornbill  -> emu wins
+    A: kangaroo B: hornbill  -> hornbill wins
+    A: kangaroo B: hyena     -> hyena wins
+    A: kangaroo B: meerkat   -> kangaroo wins
+    A: lion     B: meerkat   -> lion wins
+    A: platypus B: meerkat   -> meerkat wins
+    A: platypus B: warthog   -> platypus wins
+    A: wallaby  B: warthog   -> wallaby wins
+    A: wombat   B: warthog   -> warthog wins
+    A: wombat   B: zebra     -> wombat wins
+    Remaining:                  zebra
+
+FINAL SORTED OUTPUT:
+  +------+------------+-------+
+  | Pos  | Tuple      | Value |
+  +------+------------+-------+
+  |  1   | baboon     |  12   |
+  |  2   | emu        |   1   |
+  |  3   | hornbill   |   2   |
+  |  4   | hyena      |   9   |
+  |  5   | kangaroo   |  17   |
+  |  6   | lion       |   8   |
+  |  7   | meerkat    |   6   |
+  |  8   | platypus   |   3   |
+  |  9   | wallaby    |  21   |
+  | 10   | warthog    |   4   |
+  | 11   | wombat     |  13   |
+  | 12   | zebra      |  11   |
+  +------+------------+-------+
+
+COST ANALYSIS:
+  b_r = 12 blocks (one tuple per block)
+  M = 3 blocks
+  Number of initial runs = ceil(12/3) = 4
+  Number of merge passes = ceil(log_{M-1}(b_r/M)) = ceil(log_2(4)) = 2
+
+  Total passes = 1 (creation) + 2 (merge) = 3
+  Block transfers = b_r * (2 * number_of_merge_passes + 1)
+                  = 12 * (2*2 + 1) = 12 * 5 = 60
+
+WHY THIS MATTERS:
+  External sort-merge is fundamental to database query processing. It enables
+  sorting of relations far larger than available memory. The number of passes
+  determines I/O cost, and increasing memory (M) dramatically reduces passes
+  since the fan-in of each merge is M-1.
+
+
+================================================================================
+  PRACTICE EXERCISE 15.2 — Efficient Relational Algebra for Bank Query
+================================================================================
+
+Query:
+  SELECT T.branch_name
+  FROM branch T, branch S
+  WHERE T.assets > S.assets AND S.branch_city = 'Brooklyn'
+
+This query finds branch names whose assets exceed those of at least one
+Brooklyn branch. Equivalently: branches with assets greater than the MINIMUM
+asset value among Brooklyn branches.
+
+NAIVE approach (self-join):
+  pi_{T.branch_name}(
+    sigma_{T.assets > S.assets AND S.branch_city='Brooklyn'}(
+      rho_T(branch) x rho_S(branch)
+    )
+  )
+
+  This creates a full Cartesian product -- very expensive!
+
+EFFICIENT relational algebra expression:
+
+  Step 1: Find minimum assets among Brooklyn branches:
+    min_assets <- G_{min(assets)}(sigma_{branch_city='Brooklyn'}(branch))
+
+  Step 2: Select branches with assets exceeding that minimum:
+    pi_{branch_name}(sigma_{assets > min_assets}(branch))
+
+  In one expression:
+    pi_{branch_name}(
+      branch |><|_{assets > min_assets}
+      G_{min(assets) as min_assets}(sigma_{branch_city='Brooklyn'}(branch))
+    )
+
+  Or equivalently using a semijoin approach:
+    pi_{branch_name}(
+      sigma_{T.assets > S.assets}(
+        rho_T(branch) |><| rho_S(sigma_{branch_city='Brooklyn'}(branch))
+      )
+    )
+
+  The key optimization: filter Brooklyn branches FIRST, then join.
+
+SQL equivalent of efficient version:
+  SELECT branch_name
+  FROM branch
+  WHERE assets > (SELECT MIN(assets)
+                  FROM branch
+                  WHERE branch_city = 'Brooklyn');
+
+COST COMPARISON:
+  +---------------------+----------------------------------+
+  | Approach            | Approximate Cost                 |
+  +---------------------+----------------------------------+
+  | Naive (full cross)  | O(n^2) where n = |branch|        |
+  | Efficient (min+scan)| O(n) -- one scan to find min,    |
+  |                     |         one scan to filter        |
+  +---------------------+----------------------------------+
+
+WHY THIS MATTERS:
+  Query optimization replaces expensive self-joins with aggregation.
+  Instead of comparing every pair of branches (quadratic), we reduce
+  the problem to finding a single minimum value and scanning once.
+
+
+================================================================================
+  PRACTICE EXERCISE 15.3 — Join Cost Estimation (All Methods)
+================================================================================
+
+Given:
+  r1(A,B,C): n_r1 = 20,000 tuples, 25 tuples/block -> b_r1 = 20000/25 = 800 blocks
+  r2(C,D,E): n_r2 = 45,000 tuples, 30 tuples/block -> b_r2 = 45000/30 = 1,500 blocks
+
+Assume M (memory) = 52 blocks (a reasonable default used in textbook examples).
+
+(a) NESTED-LOOP JOIN
+---------------------
+Formula: n_r * b_s + b_r block transfers, n_r + b_r seeks
+(outer relation = r, inner relation = s)
+
+Option 1: r1 as outer
+  Transfers = n_r1 * b_r2 + b_r1
+            = 20,000 * 1,500 + 800
+            = 30,000,000 + 800
+            = 30,000,800 block transfers
+
+  Seeks     = n_r1 + b_r1
+            = 20,000 + 800
+            = 20,800 seeks
+
+  Cost = 30,000,800 * 0.1ms + 20,800 * 4ms
+       = 3,000,080 ms + 83,200 ms
+       = 3,083,280 ms
+       = ~3,083 seconds (~51 minutes!)
+
+Option 2: r2 as outer
+  Transfers = n_r2 * b_r1 + b_r2
+            = 45,000 * 800 + 1,500
+            = 36,000,000 + 1,500
+            = 36,001,500 block transfers
+
+  Seeks     = n_r2 + b_r2
+            = 45,000 + 1,500
+            = 46,500 seeks
+
+  Cost = 36,001,500 * 0.1ms + 46,500 * 4ms
+       = 3,600,150 ms + 186,000 ms
+       = 3,786,150 ms
+       = ~3,786 seconds (~63 minutes!)
+
+  BEST CHOICE: r1 as outer (30,000,800 transfers, 20,800 seeks)
+
+  +----------+------------------+--------+
+  |  Outer   | Block Transfers  | Seeks  |
+  +----------+------------------+--------+
+  |  r1      |    30,000,800    | 20,800 |
+  |  r2      |    36,001,500    | 46,500 |
+  +----------+------------------+--------+
+
+
+(b) BLOCK NESTED-LOOP JOIN
+---------------------------
+Formula (with M memory blocks):
+  Transfers = ceil(b_r/(M-2)) * b_s + b_r
+  Seeks     = 2 * ceil(b_r/(M-2))
+
+Option 1: r1 as outer (M = 52)
+  ceil(b_r1/(M-2)) = ceil(800/50) = 16
+
+  Transfers = 16 * 1,500 + 800
+            = 24,000 + 800
+            = 24,800 block transfers
+
+  Seeks     = 2 * 16 = 32 seeks
+
+  Cost = 24,800 * 0.1ms + 32 * 4ms
+       = 2,480 ms + 128 ms
+       = 2,608 ms
+       = ~2.6 seconds
+
+Option 2: r2 as outer (M = 52)
+  ceil(b_r2/(M-2)) = ceil(1500/50) = 30
+
+  Transfers = 30 * 800 + 1,500
+            = 24,000 + 1,500
+            = 25,500 block transfers
+
+  Seeks     = 2 * 30 = 60 seeks
+
+  Cost = 25,500 * 0.1ms + 60 * 4ms
+       = 2,550 ms + 240 ms
+       = 2,790 ms
+       = ~2.8 seconds
+
+  BEST CHOICE: r1 as outer (24,800 transfers, 32 seeks)
+
+  +----------+------------------+--------+----------+
+  |  Outer   | Block Transfers  | Seeks  | Time(ms) |
+  +----------+------------------+--------+----------+
+  |  r1      |    24,800        |   32   |  2,608   |
+  |  r2      |    25,500        |   60   |  2,790   |
+  +----------+------------------+--------+----------+
+
+
+(c) MERGE JOIN
+--------------
+Both relations must be sorted on attribute C first.
+
+Sort cost for r1 (b_r1 = 800, M = 52):
+  Initial runs = ceil(800/52) = 16
+  Merge passes = ceil(log_{51}(16)) = 1  (since 51 >= 16)
+  Total passes = 1 (create) + 1 (merge) = 2
+  Sort transfers = 800 * (2*1 + 1) = 800 * 3 = 2,400
+  Sort seeks = 2 * ceil(800/52) + ceil(800/51)
+             = 2 * 16 + 16 = 48
+  (More precisely: creation = 2*16 seeks, merge = 16 seeks)
+
+Sort cost for r2 (b_r2 = 1500, M = 52):
+  Initial runs = ceil(1500/52) = 29
+  Merge passes = ceil(log_{51}(29)) = 1  (since 51 >= 29)
+  Total passes = 2
+  Sort transfers = 1500 * 3 = 4,500
+  Sort seeks = 2 * 29 + 29 = 87
+
+Merge phase:
+  Transfers = b_r1 + b_r2 = 800 + 1,500 = 2,300
+  Seeks = ceil(b_r1/b_b) + ceil(b_r2/b_b) = 800 + 1,500 = 2,300
+  (with b_b = 1; using larger b_b reduces seeks)
+
+Total merge join cost:
+  Transfers = 2,400 + 4,500 + 2,300 = 9,200
+  Seeks = 48 + 87 + 2,300 = 2,435
+  (Can be reduced significantly with larger buffer blocks b_b)
+
+  With b_b = 1:
+  Cost = 9,200 * 0.1ms + 2,435 * 4ms
+       = 920 ms + 9,740 ms
+       = 10,660 ms = ~10.7 seconds
+
+  Note: if we allocate buffer blocks more generously during merge
+  (e.g., b_b = 25 for each input during final merge):
+  Merge seeks = ceil(800/25) + ceil(1500/25) = 32 + 60 = 92
+  Cost = 9,200 * 0.1 + (48 + 87 + 92) * 4
+       = 920 + 908 = 1,828 ms = ~1.8 seconds
+
+
+(d) HASH JOIN
+-------------
+Formula: 3(b_r + b_s) + 4*n_h block transfers
+         (assuming no overflow and recursive partitioning not needed)
+
+Simplified (no overflow): 3(b_r1 + b_r2) block transfers, 2(b_r1/b_b + b_r2/b_b) + 2*n_h seeks
+
+Number of partitions n_h = ceil(b_s / M) for the build relation.
+Use r1 as build (smaller): n_h = ceil(800/52) = 16
+
+Check: each partition of r1 must fit in memory.
+  Average partition size = 800/16 = 50 blocks. M = 52. 50 < 52. OK.
+
+  Transfers = 3 * (800 + 1500) = 3 * 2300 = 6,900
+  Seeks     = 2 * (800 + 1500) / b_b + 2 * n_h
+  With b_b = 1:
+  Seeks     = 2 * 2300 + 2 * 16 = 4,600 + 32 = 4,632
+
+  Cost = 6,900 * 0.1ms + 4,632 * 4ms
+       = 690 ms + 18,528 ms
+       = 19,218 ms = ~19.2 seconds
+
+  With b_b improved (allocating buffer blocks during partition, say b_b = 1):
+  The dominant cost is seeks. With larger b_b (e.g., b_b = 50):
+  Seeks = 2*(800/50 + 1500/50) + 32 = 2*(16+30) + 32 = 92 + 32 = 124
+  Cost = 690 + 124*4 = 690 + 496 = 1,186 ms = ~1.2 seconds
+
+SUMMARY COMPARISON (b_b = 1):
+  +---------------------+------------+--------+------------+
+  | Method              | Transfers  | Seeks  | Time (ms)  |
+  +---------------------+------------+--------+------------+
+  | Nested-loop (best)  | 30,000,800 | 20,800 | 3,083,280  |
+  | Block nested-loop   |     24,800 |     32 |     2,608  |
+  | Merge join          |      9,200 |  2,435 |    10,660  |
+  | Hash join           |      6,900 |  4,632 |    19,218  |
+  +---------------------+------------+--------+------------+
+
+  With larger buffer allocations, merge join and hash join become
+  significantly cheaper due to reduced seeks.
+
+WHY THIS MATTERS:
+  The choice of join algorithm can mean the difference between 51 minutes
+  (nested-loop) and 2.6 seconds (block nested-loop). In practice, query
+  optimizers choose based on available indices, sort orders, memory, and
+  relation sizes.
+
+
+================================================================================
+  PRACTICE EXERCISE 15.4 — Indexed Nested-Loop Join Inefficiency
+================================================================================
+
+PROBLEM: Why can indexed nested-loop join be inefficient with a secondary
+index when multiple tuples share the same join value?
+
+ANSWER:
+
+With a SECONDARY index (non-clustering), the index gives pointers to tuples
+that may be scattered across many different disk blocks. If multiple tuples
+in the inner relation s have the same join attribute value, each tuple could
+reside in a different block.
+
+Example scenario:
+  Relation r has a tuple with C = 42.
+  Relation s has 100 tuples with C = 42, scattered across 95 different blocks.
+
+  Secondary index lookup:
+    1 seek + tree traversal to find first entry = ~4 seeks (height of B+-tree)
+    Then 100 pointers, each to a different block = up to 95 block reads!
+
+    Total for this one value: ~4 seeks + 95 block transfers + 95 seeks
+                            = ~99 seeks + 95 transfers
+
+  With a PRIMARY (clustering) index:
+    Those 100 tuples would be stored in ~4 consecutive blocks.
+    Total: ~4 seeks + 4 block transfers
+
+DIAGRAM - Secondary vs. Clustering Index:
+
+  Secondary Index:                    Clustering Index:
+  Index                               Index
+    |                                    |
+    +-> Block 17, tuple 3               +-> Block 50, tuples 1-25
+    +-> Block 42, tuple 8               |   Block 51, tuples 26-50
+    +-> Block 89, tuple 1               |   Block 52, tuples 51-75
+    +-> Block 3,  tuple 12              |   Block 53, tuples 76-100
+    +-> Block 156, tuple 5
+    +-> ...95 different blocks           4 consecutive blocks!
+
+SORTING-BASED ALTERNATIVE:
+
+  1. For each tuple t_r in r, use the secondary index to collect all matching
+     record pointers (not the actual records) from s.
+  2. Sort these pointers by block number.
+  3. Fetch blocks in sorted order (sequential I/O, each block read at most once).
+
+  Pseudocode:
+    for each tuple t_r in r:
+        pointers = index_lookup(s, t_r[join_attr])
+        sort pointers by (block_number)
+        prev_block = -1
+        for each pointer p in sorted pointers:
+            if p.block_number != prev_block:
+                read block p.block_number
+                prev_block = p.block_number
+            extract tuple, add to result
+
+  This approach is better because:
+  - Each block of s is read at most once per join value
+  - Sequential block access pattern (fewer seeks)
+
+WHEN IS THIS MORE EFFICIENT THAN HYBRID MERGE JOIN?
+
+  This sorting-based indexed approach is better when:
+  1. The number of distinct join values with multiple matches is small.
+  2. The secondary index fits in memory (no additional I/O for index pages).
+  3. The outer relation r is small relative to s.
+  4. The duplication factor is moderate (not too many duplicates per value,
+     but enough that random I/O matters).
+
+  Hybrid merge join is better when:
+  1. Both relations are large.
+  2. Both need to be fully scanned anyway.
+  3. The duplication factor is very high (many tuples per join value).
+
+WHY THIS MATTERS:
+  Secondary indices are great for point queries but can cause massive
+  random I/O for join operations. Understanding this tradeoff is crucial
+  for query optimization.
+
+
+================================================================================
+  PRACTICE EXERCISE 15.5 — Optimal Join with Infinite Memory
+================================================================================
+
+PROBLEM: Relations r and s have no indices, are not sorted, and we have
+infinite memory. What is the lowest-cost way to compute r JOIN s?
+
+ANSWER:
+
+With infinite memory, the optimal strategy is:
+
+  1. Read both relations entirely into memory.
+     Cost: b_r + b_s block transfers, 2 seeks (one per relation)
+
+  2. Build an in-memory hash table on the join attribute(s) for the smaller
+     relation (say r).
+     Cost: 0 I/O (all in memory)
+
+  3. Probe the hash table with each tuple of s.
+     Cost: 0 I/O (all in memory)
+
+  4. Write the result to disk (if needed).
+
+TOTAL I/O COST:
+  Block transfers = b_r + b_s  (just reading both relations once)
+  Seeks = 2                     (one seek per relation)
+
+  Cost = (b_r + b_s) * t_T + 2 * t_S
+
+MEMORY REQUIRED:
+  We need enough memory to hold the smaller relation's hash table plus at
+  least one block for reading the other relation.
+
+  Memory = b_smaller + overhead for hash structure + 1 block
+         = approximately max(b_r, b_s) + min(b_r, b_s) + hash overhead
+         = b_r + b_s + hash overhead
+
+  In practice: M >= b_r + b_s + some overhead for hash table structure.
+
+  Using Example 15.3 values:
+  Memory needed = 800 + 1500 = 2,300 blocks minimum
+  Cost = 2,300 * 0.1ms + 2 * 4ms = 230ms + 8ms = 238ms
+
+  Compare to block nested-loop join: 2,608ms -- over 10x slower!
+
+WHY THIS MATTERS:
+  This shows that join cost is fundamentally bounded below by the cost
+  of simply reading the input relations. No join algorithm can do better
+  than b_r + b_s transfers. With enough memory, we can achieve this bound.
+
+
+================================================================================
+  PRACTICE EXERCISE 15.6 — Handling Negation in Selections
+================================================================================
+
+Given: B+-tree index on branch_city of the branch relation. No other indices.
+
+(a) NOT(branch_city < "Brooklyn")
+  = branch_city >= "Brooklyn"
+
+  Strategy: Use the B+-tree index.
+  - Search for "Brooklyn" in the B+-tree.
+  - Follow leaf-level pointers from "Brooklyn" to the right (ascending order)
+    to retrieve all tuples where branch_city >= "Brooklyn".
+  - This is a range query that the B+-tree handles efficiently.
+
+  Algorithm A4 (B+-tree range scan):
+  Cost = h_i * (t_T + t_S) + number_of_matching_blocks * t_T
+
+
+(b) NOT(branch_city = "Brooklyn")
+  = branch_city != "Brooklyn"
+
+  Strategy: Linear scan (A1) is usually best here.
+
+  The B+-tree cannot efficiently handle != directly. Options:
+  1. Linear scan of entire relation -- read every block.
+     Cost = b_branch * t_T + 1 * t_S
+
+  2. Use index for two range queries:
+     branch_city < "Brooklyn"  UNION  branch_city > "Brooklyn"
+     Cost = cost of two range scans via index
+
+  Linear scan is typically better because != usually matches most tuples.
+  The index approach only wins if "Brooklyn" accounts for a very large
+  fraction of the tuples.
+
+
+(c) NOT(branch_city < "Brooklyn" OR assets < 5000)
+  By De Morgan's law:
+  = NOT(branch_city < "Brooklyn") AND NOT(assets < 5000)
+  = branch_city >= "Brooklyn" AND assets >= 5000
+
+  Strategy:
+  - Use the B+-tree index on branch_city to find all tuples with
+    branch_city >= "Brooklyn" (as in part a).
+  - For each retrieved tuple, check the condition assets >= 5000
+    in memory (since there is no index on assets).
+
+  This is Algorithm A6 (conjunction with one index):
+  1. Use index on branch_city to get candidate tuples.
+  2. Test assets >= 5000 on each candidate in memory.
+
+  Cost = cost of index scan for branch_city >= "Brooklyn"
+       = h_i seeks + number of matching blocks transfers
+
+WHY THIS MATTERS:
+  Negation transforms are critical in query optimization. De Morgan's laws
+  convert NOT over disjunctions into conjunctions, often enabling partial
+  index usage where none seemed possible.
+
+
+================================================================================
+  PRACTICE EXERCISE 15.7 — Iterator for Indexed Nested-Loop Join
+================================================================================
+
+Pseudocode for indexed nested-loop join with pipelined outer relation:
+
+The outer relation is provided via a pipeline (iterator), and the inner
+relation has an index on the join attribute.
+
+STATE VARIABLES:
+  - outer_iter:  iterator for the outer (pipelined) relation
+  - inner_index: index on the join attribute of the inner relation
+  - current_outer_tuple: current tuple from outer relation
+  - match_list: list of matching inner tuples for current outer tuple
+  - match_pos: current position in match_list
+
+----------------------------------------------------------------------
+  OPEN():
+      outer_iter.open()
+      current_outer_tuple = null
+      match_list = empty
+      match_pos = 0
+----------------------------------------------------------------------
+
+----------------------------------------------------------------------
+  NEXT():
+      while true:
+          // Try to return next match from current match list
+          if match_pos < length(match_list):
+              result = combine(current_outer_tuple, match_list[match_pos])
+              match_pos = match_pos + 1
+              return result
+
+          // Current match list exhausted; get next outer tuple
+          current_outer_tuple = outer_iter.next()
+
+          if current_outer_tuple == END_OF_RELATION:
+              return END_OF_RELATION
+
+          // Look up matches in inner relation using index
+          join_value = current_outer_tuple[join_attribute]
+          match_list = inner_index.lookup(join_value)
+          match_pos = 0
+
+          // Loop back to try returning from new match_list
+----------------------------------------------------------------------
+
+----------------------------------------------------------------------
+  CLOSE():
+      outer_iter.close()
+      // inner_index remains open for potential reuse
+----------------------------------------------------------------------
+
+EXECUTION TRACE EXAMPLE:
+
+  Outer (pipelined): student tuples arriving one at a time
+  Inner: takes relation with B+-tree index on ID
+
+  open() called:
+    -> student_iter.open()  [upstream operator starts]
+
+  next() called:
+    -> current_outer = student_iter.next()  => (12345, "Wu", "Finance")
+    -> join_value = 12345
+    -> match_list = index.lookup(12345)     => [(12345,"CS101","1","Fall",2017,"A")]
+    -> return combined tuple
+
+  next() called again:
+    -> match_pos = 1, match_list length = 1, so exhausted
+    -> current_outer = student_iter.next()  => (54321, "Smith", "Comp.Sci.")
+    -> match_list = index.lookup(54321)     => [(54321,"CS101",...), (54321,"CS315",...)]
+    -> return first combined tuple
+
+  next() called again:
+    -> match_pos = 1 < 2, return second combined tuple
+
+  ... and so on
+
+WHY THIS MATTERS:
+  Iterator-based pipelining avoids materializing intermediate results.
+  The indexed nested-loop join iterator can start producing output tuples
+  as soon as the first outer tuple arrives, enabling efficient query
+  execution pipelines.
+
+
+================================================================================
+  PRACTICE EXERCISE 15.8 — Algorithms for Relational Division
+================================================================================
+
+Relational division: r / s
+  r(A, B), s(B) => result has schema (A)
+  A tuple a is in the result if for EVERY tuple b in s, (a, b) is in r.
+
+(A) SORT-BASED ALGORITHM:
+
+  1. Sort r on (A, B).
+  2. Sort s on (B).
+  3. Scan through sorted r, grouping by A value.
+  4. For each group (all tuples with same A value):
+     a. Merge-compare the B values in this group with all B values in s.
+     b. If every value in s appears in the group, output A.
+
+  Pseudocode:
+    sort r on (A, B)
+    sort s on (B)
+    s_values = read all sorted s into list
+
+    current_A = null
+    r_B_values = empty list
+
+    for each tuple (a, b) in sorted r:
+        if a != current_A:
+            if current_A != null:
+                // Check if r_B_values contains all of s_values
+                if merge_contains_all(r_B_values, s_values):
+                    output current_A
+            current_A = a
+            r_B_values = empty list
+        append b to r_B_values
+
+    // Check last group
+    if merge_contains_all(r_B_values, s_values):
+        output current_A
+
+  merge_contains_all(sorted_list1, sorted_list2):
+    // Returns true if sorted_list1 contains every element of sorted_list2
+    i = 0, j = 0
+    while j < length(sorted_list2):
+        if i >= length(sorted_list1): return false
+        if sorted_list1[i] == sorted_list2[j]: j++; i++
+        else if sorted_list1[i] < sorted_list2[j]: i++
+        else: return false    // sorted_list2[j] not found
+    return true
+
+  Cost:
+    Sort r: O(b_r * log(b_r)) transfers
+    Sort s: O(b_s * log(b_s)) transfers
+    Merge scan: b_r + b_s transfers
+    Total: sort costs + b_r + b_s
+
+
+(B) HASH-BASED ALGORITHM:
+
+  1. Build a hash table H_s on s(B) -- hash on B values.
+  2. Build a hash table H_r on r(A,B) -- hash on A values.
+     For each bucket (A value), store the set of associated B values.
+  3. For each entry in H_r:
+     a. Check if the set of B values for this A value is a superset
+        of all values in H_s.
+     b. If yes, output A.
+
+  Pseudocode:
+    // Phase 1: Hash s
+    H_s = new HashSet()
+    for each tuple (b) in s:
+        H_s.add(b)
+    count_s = H_s.size()
+
+    // Phase 2: Hash r, grouping by A
+    H_r = new HashMap()   // A -> Set of B values
+    for each tuple (a, b) in r:
+        if a not in H_r:
+            H_r[a] = new HashSet()
+        H_r[a].add(b)
+
+    // Phase 3: Check division condition
+    for each (a, B_set) in H_r:
+        if B_set.size() >= count_s:
+            match = true
+            for each b in H_s:
+                if b not in B_set:
+                    match = false
+                    break
+            if match:
+                output a
+
+  Cost (assuming enough memory):
+    Read r: b_r transfers, 1 seek
+    Read s: b_s transfers, 1 seek
+    Total: b_r + b_s transfers, 2 seeks
+
+  If memory is limited, use partitioned hashing:
+    Partition both r and s on B values using hash function h.
+    Process each partition independently.
+    Cost: 3(b_r + b_s) transfers (similar to hash join)
+
+WHY THIS MATTERS:
+  Division is rarely used directly in SQL (it requires nested NOT EXISTS),
+  but understanding its implementation helps with complex analytical queries
+  like "find students who have taken ALL required courses."
+
+
+================================================================================
+  PRACTICE EXERCISE 15.9 — Effect of Increasing Buffer Blocks Per Run
+================================================================================
+
+PROBLEM: What happens when we increase the number of buffer blocks per run (b_b)
+while keeping total memory M fixed?
+
+ANALYSIS:
+
+  When merging runs in external sort-merge:
+  - Total memory blocks = M
+  - Buffer blocks per run = b_b
+  - Number of runs that can be merged simultaneously = floor(M/b_b) - 1
+    (reserving b_b blocks for output)
+
+  Actually: merge fan-in = floor((M - b_b) / b_b) = floor(M/b_b) - 1
+
+TRADEOFF:
+
+  Increasing b_b:
+  +------+----------+---------+-------+--------------------------------------+
+  | b_b  | Fan-in   | Seeks   | Passes| Effect                               |
+  +------+----------+---------+-------+--------------------------------------+
+  |  1   | M - 1    | Many    | Few   | Maximum fan-in, minimum passes,      |
+  |      |          |         |       | but one seek per block transferred    |
+  +------+----------+---------+-------+--------------------------------------+
+  |  10  | M/10 - 1 | Fewer   | More  | Fewer seeks (sequential reads of 10  |
+  |      |          |         |       | blocks), but fewer runs merged at     |
+  |      |          |         |       | once, possibly needing more passes    |
+  +------+----------+---------+-------+--------------------------------------+
+  | M/2  |    1     | Minimum | Many  | Only 2-way merge (1 input + 1 output)|
+  |      |          |         |       | Very few seeks, but many passes      |
+  +------+----------+---------+-------+--------------------------------------+
+
+CONCRETE EXAMPLE (M = 100 blocks, b_r = 10,000 blocks):
+
+  b_b = 1:
+    Fan-in = 99
+    Initial runs = ceil(10000/100) = 100
+    Passes = ceil(log_99(100)) = 2
+    Total block transfers = 10000 * (2*2+1) = 50,000 (but actually
+      = 10000 * 2 * (passes) read/write + 10000 read + 10000 write)
+    Seeks per pass = 2 * 10000 (each block = one seek)
+
+  b_b = 10:
+    Fan-in = floor(100/10) - 1 = 9
+    Initial runs = 100
+    Passes = ceil(log_9(100)) = 3
+    Total: more passes but ~10x fewer seeks per pass
+    Seeks per pass = 2 * (10000/10) = 2000
+
+THE KEY INSIGHT:
+
+  Block transfers stay roughly the same (slightly more with extra passes),
+  but seeks decrease dramatically with larger b_b.
+
+  Since t_S = 4ms >> t_T = 0.1ms, the reduction in seeks usually
+  outweighs the increase in passes, up to a point.
+
+  OPTIMAL b_b balances:
+    - Reduced seeks (good: proportional to 1/b_b)
+    - Increased passes (bad: proportional to log base decreases)
+
+  Since seeks dominate on magnetic disk, moderately large b_b
+  (reducing seeks by a factor of b_b at cost of slightly more passes)
+  is typically beneficial.
+
+WHY THIS MATTERS:
+  Tuning b_b is a practical performance knob. For magnetic disks where
+  seek time is 40x transfer time per block, reading 10-50 consecutive
+  blocks per seek is usually optimal.
+
+
+================================================================================
+  PRACTICE EXERCISE 15.10 — Semijoin and Anti-Semijoin Algorithms
+================================================================================
+
+DEFINITIONS:
+  Semijoin (r |><  s):     tuples in r that have a matching tuple in s
+  Anti-semijoin (r >|< s): tuples in r that have NO matching tuple in s
+
+(a) SEMIJOIN (r SEMIJOIN s on common attribute C)
+
+  SORT-BASED:
+    1. Sort r on C.
+    2. Sort s on C (only need distinct values).
+    3. Merge scan:
+       - Advance through both sorted relations.
+       - When r.C == s.C, output the r tuple(s).
+       - When r.C < s.C, advance r (no match).
+       - When r.C > s.C, advance s.
+       - Key difference from regular merge join: output only r tuples,
+         and only output each r tuple once (even if multiple s matches).
+
+    Pseudocode:
+      sort r on C, sort s on C
+      i = 0, j = 0  // pointers into r, s
+      while i < |r| and j < |s|:
+          if r[i].C < s[j].C:
+              i++
+          else if r[i].C > s[j].C:
+              j++
+          else:  // match
+              current = r[i].C
+              while i < |r| and r[i].C == current:
+                  output r[i]
+                  i++
+              while j < |s| and s[j].C == current:
+                  j++
+
+    Cost: sort(r) + sort(s) + (b_r + b_s) transfers
+
+  HASH-BASED:
+    1. Build hash table on s (on attribute C). Only need to store
+       distinct C values (save memory).
+    2. Scan r: for each tuple, probe hash table.
+       If match found, output the r tuple.
+
+    Pseudocode:
+      H = new HashSet()
+      for each tuple t_s in s:
+          H.add(t_s.C)
+      for each tuple t_r in r:
+          if t_r.C in H:
+              output t_r
+
+    Cost (in-memory): b_r + b_s transfers, 2 seeks
+    Cost (partitioned): 3(b_r + b_s) transfers
+
+
+(b) ANTI-SEMIJOIN (r ANTI-SEMIJOIN s on common attribute C)
+
+  SORT-BASED:
+    Same as semijoin, but output r tuples that do NOT match:
+    1. Sort r on C, sort s on C.
+    2. Merge scan:
+       - When r.C < s.C, output r tuple (no match in s), advance r.
+       - When r.C > s.C, advance s.
+       - When r.C == s.C, skip r tuple(s) with this value, advance both.
+
+    Pseudocode:
+      sort r on C, sort s on C
+      i = 0, j = 0
+      while i < |r|:
+          if j >= |s|:
+              output r[i]   // no more s values, all remaining r unmatched
+              i++
+          else if r[i].C < s[j].C:
+              output r[i]   // no match
+              i++
+          else if r[i].C > s[j].C:
+              j++
+          else:  // match -- skip these r tuples
+              current = r[i].C
+              while i < |r| and r[i].C == current:
+                  i++       // skip matched r tuples
+              while j < |s| and s[j].C == current:
+                  j++
+
+  HASH-BASED:
+    1. Build hash table (set) on s.C values.
+    2. Scan r: for each tuple, probe hash table.
+       If NO match found, output the r tuple.
+
+    Pseudocode:
+      H = new HashSet()
+      for each tuple t_s in s:
+          H.add(t_s.C)
+      for each tuple t_r in r:
+          if t_r.C NOT in H:
+              output t_r
+
+    Cost: same as semijoin.
+
+WHY THIS MATTERS:
+  Semijoins are heavily used in distributed databases to reduce data
+  transfer. Anti-semijoins are used for NOT EXISTS/NOT IN subqueries,
+  which are common in business queries ("find customers who have never
+  placed an order").
+
+
+================================================================================
+  PRACTICE EXERCISE 15.11 — Pipelining for Top-K Queries
+================================================================================
+
+PROBLEM: A query retrieves only the first K results then stops. Which is
+better: demand-driven or producer-driven pipelining?
+
+ANSWER: DEMAND-DRIVEN (lazy/pull-based) pipelining is better.
+
+DEMAND-DRIVEN (Pull):
+  - Consumer calls next() on producer.
+  - Producer computes just enough to return one result.
+  - After K calls to next(), consumer stops.
+  - Producer does NO unnecessary work.
+
+  Flow for K = 3:
+    Consumer: next() -> Producer computes tuple 1 -> returns it
+    Consumer: next() -> Producer computes tuple 2 -> returns it
+    Consumer: next() -> Producer computes tuple 3 -> returns it
+    Consumer: close() -> Producer stops. Done!
+
+PRODUCER-DRIVEN (Push/Eager):
+  - Producer eagerly generates tuples and pushes them into a buffer.
+  - Consumer reads from buffer.
+  - Problem: Producer may generate MANY tuples beyond K before consumer
+    signals "stop."
+
+  Flow for K = 3:
+    Producer pushes: tuple1, tuple2, tuple3, tuple4, tuple5... (keeps going!)
+    Consumer reads: tuple1, tuple2, tuple3 -> signals STOP
+    Producer may have already computed tuples 4-100 unnecessarily!
+
+  With buffering, the producer might fill an entire buffer before the
+  consumer checks. Wasted computation and I/O.
+
+QUANTITATIVE EXAMPLE:
+
+  Query: SELECT * FROM student ORDER BY GPA DESC LIMIT 10;
+  student has 5000 tuples in 100 blocks.
+
+  Demand-driven:
+    - Sort might need to complete (can't pipeline sorting easily), but
+      after sort, only 10 next() calls needed.
+    - If using an index on GPA, only 10 index lookups needed!
+
+  Producer-driven:
+    - The sort operator might push all 5000 tuples downstream.
+    - Or with buffering (buffer size B), it pushes B tuples at a time.
+    - Even with B = 100, the first batch of 100 tuples is computed
+      when only 10 were needed.
+
+EXCEPTION: If the query needs ALL results and the pipeline is long,
+producer-driven with buffering can be better because it keeps all
+operators busy simultaneously (better CPU utilization and instruction
+cache behavior). But for top-K queries, demand-driven wins clearly.
+
+WHY THIS MATTERS:
+  Top-K queries are extremely common (web search results, dashboards,
+  paginated APIs). Demand-driven pipelining enables "short-circuit"
+  evaluation, potentially saving orders of magnitude of computation.
+
+
+================================================================================
+  PRACTICE EXERCISE 15.12 — Instruction Cache Effects
+================================================================================
+
+(a) WHY PRODUCER-DRIVEN PIPELINING HAS BETTER INSTRUCTION CACHE HIT RATE
+
+  In demand-driven (pull-based) pipelining:
+  - Each next() call traverses the entire operator tree.
+  - For each tuple, the CPU executes code for operator A, then B, then C, ...
+  - The instruction cache is loaded with code for A, then evicted when B
+    loads, then B evicted when C loads, etc.
+  - For N operators and small cache, each operator's code may be evicted
+    before it's called again.
+
+    Per-tuple execution:
+      Load A code -> execute -> evict
+      Load B code -> execute -> evict
+      Load C code -> execute -> evict
+      ... repeat for next tuple -> reload A code (cache miss!)
+
+  In producer-driven (push-based) pipelining:
+  - Each operator runs for a BATCH of tuples (fills buffer).
+  - Operator A processes many tuples consecutively before B starts.
+  - The instruction cache holds A's code for the entire batch.
+  - Excellent temporal locality: same instructions used repeatedly.
+
+    Batch execution:
+      Load A code -> execute for 1000 tuples -> cache hits for tuples 2-1000!
+      Load B code -> execute for 1000 tuples -> cache hits for tuples 2-1000!
+      Load C code -> execute for 1000 tuples -> cache hits for tuples 2-1000!
+
+  Result: Producer-driven has O(1) instruction cache misses per batch,
+  while demand-driven has O(operators) cache misses per tuple.
+
+
+(b) WHY RETURNING MULTIPLE RESULTS PER NEXT() CALL IMPROVES CACHE BEHAVIOR
+
+  Standard next() returns 1 tuple:
+    Call next() on operator A:
+      A calls next() on B:
+        B calls next() on C:
+          C processes 1 tuple, returns
+        B processes 1 tuple, returns
+      A processes 1 tuple, returns
+    -> Each operator's code touched once per tuple
+
+  Batch next() returns N tuples:
+    Call next_batch(N) on operator A:
+      A calls next_batch(N) on B:
+        B calls next_batch(N) on C:
+          C processes N tuples, returns batch
+          [C's code stays in cache for all N tuples!]
+        B processes N tuples, returns batch
+        [B's code stays in cache for all N tuples!]
+      A processes N tuples, returns batch
+
+  With batching:
+  - Each operator's code is loaded into instruction cache ONCE per batch.
+  - Amortizes cache miss cost over N tuples.
+  - The batch size N should be chosen so that one operator's working code
+    fits in the instruction cache (typically a few KB).
+
+  This is the principle behind VECTORIZED QUERY EXECUTION, used in modern
+  column-oriented databases like DuckDB, Vectorwise, and ClickHouse.
+
+WHY THIS MATTERS:
+  On modern CPUs, instruction cache misses can cost 50-200 cycles each.
+  For simple operators (filter, project), the actual per-tuple computation
+  may be only 10-20 cycles. Cache misses can dominate! Vectorized execution
+  can improve throughput by 5-10x on in-memory workloads.
+
+
+================================================================================
+  PRACTICE EXERCISE 15.13 — Finding Documents with at Least K of N Keywords
+================================================================================
+
+PROBLEM: Given N sorted keyword-document lists, find documents containing
+at least K of the N keywords.
+
+ALGORITHM:
+
+  Input: N sorted lists L_1, L_2, ..., L_N (each sorted by document ID)
+         Threshold K (1 <= K <= N)
+
+  Approach: Multi-way merge with counting.
+
+  Pseudocode:
+    // Use a min-heap of (doc_id, list_index) entries
+    // Initialize heap with first element of each non-empty list
+    heap = new MinHeap()
+    pointers[1..N] = {0, 0, ..., 0}  // current position in each list
+
+    for i = 1 to N:
+        if L_i is not empty:
+            heap.insert( (L_i[0], i) )
+            pointers[i] = 0
+
+    current_doc = -1
+    count = 0
+
+    while heap is not empty:
+        (doc_id, list_idx) = heap.extractMin()
+
+        if doc_id == current_doc:
+            count++
+        else:
+            // New document; check if previous document qualifies
+            if current_doc != -1 and count >= K:
+                output current_doc
+            current_doc = doc_id
+            count = 1
+
+        // Advance pointer in list_idx
+        pointers[list_idx]++
+        if pointers[list_idx] < length(L_{list_idx}):
+            heap.insert( (L_{list_idx}[pointers[list_idx]], list_idx) )
+
+    // Check last document
+    if count >= K:
+        output current_doc
+
+EXAMPLE:
+  Keywords: "database", "query", "index"
+  K = 2 (at least 2 of 3 keywords)
+
+  L_database: [1, 3, 5, 7, 12, 15]
+  L_query:    [2, 3, 5, 8, 12]
+  L_index:    [1, 4, 5, 9, 12, 20]
+
+  Merge trace:
+  +--------+----------+-------+--------+
+  | Doc ID | From     | Count | Output |
+  +--------+----------+-------+--------+
+  |   1    | database |   1   |        |
+  |   1    | index    |   2   | YES    |
+  |   2    | query    |   1   |        |
+  |   3    | database |   1   |        |
+  |   3    | query    |   2   | YES    |
+  |   4    | index    |   1   |        |
+  |   5    | database |   1   |        |
+  |   5    | query    |   2   | --     |
+  |   5    | index    |   3   | YES    |
+  |   7    | database |   1   |        |
+  |   8    | query    |   1   |        |
+  |   9    | index    |   1   |        |
+  |  12    | database |   1   |        |
+  |  12    | query    |   2   | --     |
+  |  12    | index    |   3   | YES    |
+  |  15    | database |   1   |        |
+  |  20    | index    |   1   |        |
+  +--------+----------+-------+--------+
+
+  Result: documents {1, 3, 5, 12}
+
+COMPLEXITY:
+  Time: O(T * log N) where T = total entries across all N lists
+  Space: O(N) for the heap
+  I/O: O(sum of all list sizes) -- each list read sequentially once
+
+OPTIMIZATION (Threshold Algorithm for K = N):
+  When K = N, we can use a more efficient approach:
+  - Advance the pointer in the list with the smallest current doc_id.
+  - When all N lists point to the same doc_id, output it.
+  - This skips documents that can't possibly match all N keywords.
+
+WHY THIS MATTERS:
+  This is the foundation of web search engines. A query with 5 keywords
+  needs to find pages matching most/all keywords from inverted index lists
+  that may contain millions of document IDs each.
+
+
+================================================================================
+  PRACTICE EXERCISE 15.14 — Indexing with Concept Hierarchies
+================================================================================
+
+PROBLEM: Document contains "leopard" but query asks for "carnivore" or
+"mammal." How to index for efficient concept-hierarchy queries?
+
+CONCEPT HIERARCHY EXAMPLE:
+
+         animal
+        /      \
+    mammal    reptile
+    /    \
+  carnivore  herbivore
+  /   |   \
+cat  leopard  lion
+
+SOLUTION: Index Expansion at Indexing Time
+
+  When indexing a document containing "leopard":
+  1. Look up "leopard" in the concept hierarchy.
+  2. Find ALL ancestor concepts: carnivore, mammal, animal.
+  3. Add the document to the inverted index entry for EACH ancestor.
+
+  Index entries after processing a document D1 containing "leopard":
+    "leopard"   -> [D1, ...]
+    "carnivore" -> [D1, ...]
+    "mammal"    -> [D1, ...]
+    "animal"    -> [D1, ...]
+
+  Now a query for "carnivore" directly finds D1 without any hierarchy
+  traversal at query time.
+
+WHY INDEX-TIME EXPANSION IS PREFERRED:
+
+  Alternative: Query-time expansion
+    - Query for "carnivore" expands to: "carnivore" OR "cat" OR "leopard"
+      OR "lion" OR ... (all specializations)
+    - Problem: many specializations! The concept "mammal" might have
+      thousands of descendant species.
+    - Must merge many inverted index lists at query time.
+
+  Index-time expansion is better because:
+  +---------------------------+------------------+-------------------+
+  | Property                  | Index-time       | Query-time        |
+  +---------------------------+------------------+-------------------+
+  | Generalizations per concept| Few (depth ~4-5) | N/A              |
+  | Specializations per concept| Many (hundreds)  | N/A              |
+  | Index size increase       | Small (few extras)| None             |
+  | Query speed               | Single lookup    | Many list merges  |
+  | Index build time          | Slightly more    | Standard          |
+  +---------------------------+------------------+-------------------+
+
+  The hierarchy is "not very deep" and has "few generalizations per concept"
+  but "many specializations" -- so expanding upward (few ancestors) is
+  much cheaper than expanding downward (many descendants).
+
+IMPLEMENTATION:
+  concept_ancestors = {
+      "leopard":   ["carnivore", "mammal", "animal"],
+      "cat":       ["carnivore", "mammal", "animal"],
+      "lion":      ["carnivore", "mammal", "animal"],
+      "snake":     ["reptile", "animal"],
+      ...
+  }
+
+  index_document(doc_id, words):
+      for each word w in words:
+          add doc_id to inverted_index[w]
+          for each ancestor a in concept_ancestors[w]:
+              add doc_id to inverted_index[a]
+
+  query(concept):
+      return inverted_index[concept]   // single lookup!
+
+WHY THIS MATTERS:
+  This technique is used in biomedical literature search (MeSH terms in
+  PubMed), e-commerce product search (category hierarchies), and
+  knowledge graphs. Expanding at index time trades a small increase in
+  index size for dramatically faster queries.
+
+
+================================================================================
+  PRACTICE EXERCISE 15.15 — Nested-Loop Join on Column-Oriented Storage
+================================================================================
+
+PROBLEM: Why does nested-loop join work poorly on column-oriented storage?
+
+COLUMN-ORIENTED STORAGE LAYOUT:
+
+  Row-oriented (traditional):
+    Block 1: (1, "Wu", "Finance"), (2, "Smith", "CS"), (3, "Lee", "Math")
+    Block 2: (4, "Jones", "Bio"), (5, "Park", "CS"), ...
+
+  Column-oriented:
+    ID column:    [1, 2, 3, 4, 5, ...]      <- stored separately
+    Name column:  ["Wu", "Smith", "Lee", ...] <- stored separately
+    Dept column:  ["Finance", "CS", "Math",...] <- stored separately
+
+WHY NESTED-LOOP JOIN IS PROBLEMATIC:
+
+  Nested-loop join processes one tuple at a time from the outer relation.
+  For each outer tuple, it must:
+  1. Read the join attribute value from the outer tuple.
+  2. Scan the inner relation to find matches.
+  3. Reconstruct full tuples from matched rows.
+
+  In column storage, "reading one tuple" requires:
+  - Reading the join attribute from its column file.
+  - For each match, reading ALL needed columns from separate column files.
+  - This means many random I/Os across different column files.
+
+  For a single outer tuple match:
+    Row store:  1 block read (all attributes in same block)
+    Col store:  k block reads (one per attribute column, each potentially
+                in a different block)
+
+  The per-tuple reconstruction cost makes nested-loop join extremely
+  expensive. If the join produces N result tuples involving k columns,
+  column store needs up to N * k random I/Os vs. N for row store.
+
+BETTER ALTERNATIVE: Columnar Join Strategies
+
+  1. HASH JOIN WITH COLUMN BATCHING:
+     - Read join columns of both relations (just the join attribute columns).
+     - Perform hash join on just the join attribute columns.
+     - Produce a list of matching (row_id_r, row_id_s) pairs.
+     - Sort these pairs by row_id within each relation.
+     - Fetch needed columns using sorted row_ids (sequential access).
+
+  2. LATE MATERIALIZATION:
+     - Keep data in columnar format as long as possible.
+     - Pass position lists (row IDs) between operators instead of tuples.
+     - Only reconstruct full tuples at the very end.
+
+     Pipeline:
+       Filter col_A -> position list P1
+       Filter col_B -> position list P2
+       Intersect P1 and P2 -> position list P3
+       Join using position lists
+       Reconstruct tuples only for final output from P3
+
+  3. VECTORIZED JOIN:
+     - Process vectors (batches) of values from each column.
+     - Hash join on vectors of the join column.
+     - Match vectors produce position vectors for other columns.
+
+EXAMPLE:
+  Join student(ID, name, dept) with takes(ID, course) on ID.
+
+  Columnar hash join:
+    1. Read student.ID column (small, just IDs) -> build hash table
+    2. Read takes.ID column -> probe hash table
+    3. Collect matching position pairs: [(student_pos, takes_pos), ...]
+    4. Sort by student_pos -> fetch student.name, student.dept sequentially
+    5. Sort by takes_pos -> fetch takes.course sequentially
+    6. Combine and output
+
+WHY THIS MATTERS:
+  Column stores (Redshift, BigQuery, Snowflake, DuckDB) dominate analytics.
+  Their join implementations must be fundamentally different from row-store
+  joins. Late materialization is a key technique that can provide 3-10x
+  speedup over naive tuple reconstruction.
+
+
+================================================================================
+  PRACTICE EXERCISE 15.16 — When Column-Oriented Storage Helps
+================================================================================
+
+(a) SELECT ID, name, dept_name FROM student WHERE ID = 12345
+
+  Column-oriented storage is NOT very beneficial here.
+
+  Analysis:
+  - This is a point query retrieving a single tuple.
+  - ALL columns of that tuple are requested (ID, name, dept_name).
+  - In column store: must read from 3 separate column files, then
+    reconstruct the tuple. Needs an index on ID column.
+  - In row store: single index lookup on ID, read 1 block, done.
+
+  +------------------+-------------------------------------------+
+  | Storage          | Cost                                      |
+  +------------------+-------------------------------------------+
+  | Row-oriented     | 1 index lookup + 1 block read             |
+  | Column-oriented  | 1 index lookup + 3 column reads           |
+  |                  | (one per requested column)                |
+  +------------------+-------------------------------------------+
+
+  Row store wins because: single tuple access, all columns needed,
+  point query with high selectivity.
+
+
+(b) SELECT year, course_id, COUNT(*)
+    FROM takes
+    GROUP BY year, course_id
+
+  Column-oriented storage IS beneficial here.
+
+  Analysis:
+  - This is an aggregation query scanning the entire takes relation.
+  - Only 2 out of 6 columns are needed (year, course_id).
+  - No tuple reconstruction needed -- just aggregate.
+
+  takes relation: (ID, course_id, sec_id, semester, year, grade)
+  -- 6 attributes, but query only touches 2.
+
+  +------------------+-------------------------------------------+
+  | Storage          | Cost                                      |
+  +------------------+-------------------------------------------+
+  | Row-oriented     | Scan ALL blocks of takes (all 6 columns)  |
+  |                  | b_takes = 400 blocks                      |
+  | Column-oriented  | Scan only year + course_id columns        |
+  |                  | ~400 * 2/6 = ~133 blocks                  |
+  |                  | (plus better compression on columns)      |
+  +------------------+-------------------------------------------+
+
+  Column store advantages:
+  1. Read only 2/6 = 33% of the data (I/O reduction).
+  2. Each column is homogeneous type -> better compression
+     (year might compress to 2 bytes, course_id to dictionary encoding).
+  3. Vectorized aggregation on columnar data is very CPU-cache friendly.
+  4. No tuple reconstruction needed for aggregation.
+
+  Estimated speedup: 3-5x from I/O reduction alone, potentially 10x+
+  with compression and vectorized execution.
+
+GENERAL RULES:
+  +-----------------------------+----------+----------+
+  | Query Characteristic        | Row Best | Col Best |
+  +-----------------------------+----------+----------+
+  | Point lookup (1 tuple)      |    X     |          |
+  | Full tuple retrieval        |    X     |          |
+  | Full table scan             |          |    X     |
+  | Few columns from many       |          |    X     |
+  | Aggregation queries         |          |    X     |
+  | INSERT/UPDATE heavy         |    X     |          |
+  | OLTP workload               |    X     |          |
+  | OLAP/analytics workload     |          |    X     |
+  +-----------------------------+----------+----------+
+
+WHY THIS MATTERS:
+  This is why modern data warehouses (Snowflake, BigQuery, Redshift) use
+  columnar storage while transactional databases (PostgreSQL, MySQL) use
+  row storage. The workload pattern determines the optimal storage layout.
+
+
+================================================================================
+  EXERCISE 15.17 — Sorting Cost Calculation (Magnetic Disk vs Flash)
+================================================================================
+
+Given:
+  Relation size = 40 GB
+  Block size = 4 KB
+  Memory = 40 MB
+  Seek cost (magnetic) = 5 ms = 0.005 s
+  Transfer rate (magnetic) = 40 MB/s
+  Transfer time per block (magnetic) = 4KB / 40MB/s = 0.1 ms = 0.0001 s
+
+Derived values:
+  b_r = 40 GB / 4 KB = 40 * 1024 * 1024 KB / 4 KB = 10,485,760 blocks
+  M = 40 MB / 4 KB = 40 * 1024 KB / 4 KB = 10,240 blocks
+
+(a) SORTING COST WITH b_b = 1 AND b_b = 100
+
+CASE 1: b_b = 1 (one block per buffer)
+........................................
+
+  Initial runs = ceil(b_r / M) = ceil(10,485,760 / 10,240) = 1,024 runs
+
+  Merge fan-in = M - 1 = 10,239 (with b_b = 1)
+  Number of merge passes = ceil(log_{10239}(1024)) = 1
+  (since 10239 > 1024, one merge pass suffices)
+
+  Total passes = 1 (creation) + 1 (merge) = 2
+
+  Block transfers:
+    = b_r * (2 * merge_passes + 1)
+    = 10,485,760 * (2 * 1 + 1)
+    = 10,485,760 * 3
+    = 31,457,280 block transfers
+
+  Actually, more precisely:
+    Run creation: read + write all blocks = 2 * b_r = 20,971,520 transfers
+    Merge pass 1: read + write all blocks = 2 * b_r = 20,971,520 transfers
+    Final read output is the last write, so total:
+    = b_r * (2 * (1 + 1)) = but the last merge pass writes final output...
+
+  Using the textbook formula:
+    Total block transfers = b_r * (2 * ceil(log_{M-1}(b_r/M)) + 1)
+    (The +1 accounts for the initial read; each pass reads and writes)
+    But the FULL formula is:
+    = b_r * (2 * number_of_merge_passes + 1)
+    if we count the initial run creation as a read-then-write (2 * b_r)
+    plus each merge pass (2 * b_r) minus the final write:
+
+  Let me use the standard formula directly:
+    Block transfers = b_r * (2 * ceil(log_{floor(M/b_b)-1}(ceil(b_r/M))) + 1)
+
+  With b_b = 1:
+    = 10,485,760 * (2 * ceil(log_{10239}(1024)) + 1)
+    = 10,485,760 * (2 * 1 + 1)
+    = 10,485,760 * 3
+    = 31,457,280 block transfers
+
+  Seeks during run creation:
+    = 2 * ceil(b_r / M) = 2 * 1024 = 2,048
+    (one seek to read each run-sized chunk, one to write each run)
+
+  Seeks during merge (b_b = 1):
+    Each merge pass: each block requires a seek (b_b = 1)
+    Reads: b_r seeks (each block read = 1 seek)
+    Writes: b_r seeks (each block written = 1 seek)
+    = 2 * b_r = 2 * 10,485,760 = 20,971,520
+
+  But this is refined: during merge, we read from 1024 runs,
+  alternating between them. Each time we switch runs, we seek.
+  With b_b = 1, every read block from a different run = a seek.
+  Number of seeks for merge reads = b_r = 10,485,760
+  Number of seeks for merge writes = b_r / b_b = 10,485,760
+
+  Total seeks = 2,048 + 20,971,520 = 20,973,568
+
+  Cost with b_b = 1:
+    Transfer cost = 31,457,280 * 0.0001 s = 3,145.73 s
+    Seek cost     = 20,973,568 * 0.005 s  = 104,867.84 s
+    TOTAL         = 108,013.57 s = ~30 hours!
+
+  The seek cost completely dominates!
+
+CASE 2: b_b = 100 (100 blocks per buffer)
+...........................................
+
+  Merge fan-in = floor(M / b_b) - 1 = floor(10240/100) - 1 = 102 - 1 = 101
+
+  Number of merge passes = ceil(log_{101}(1024)) = ceil(1.5) = 2
+
+  Wait: log_{101}(1024) = ln(1024)/ln(101) = 6.93/4.62 = 1.50
+  So ceil(1.50) = 2 merge passes.
+
+  Total passes = 1 (creation) + 2 (merge) = 3
+
+  Block transfers = b_r * (2 * 2 + 1) = 10,485,760 * 5 = 52,428,800
+
+  Seeks during run creation = 2 * ceil(b_r / M) = 2 * 1024 = 2,048
+
+  Seeks during each merge pass:
+    Reads: ceil(b_r / b_b) = ceil(10,485,760 / 100) = 104,858 seeks
+    Writes: ceil(b_r / b_b) = 104,858 seeks
+    Per pass: 209,716 seeks
+    Two merge passes: 419,432 seeks
+
+  Total seeks = 2,048 + 419,432 = 421,480
+
+  Cost with b_b = 100:
+    Transfer cost = 52,428,800 * 0.0001 s = 5,242.88 s
+    Seek cost     = 421,480 * 0.005 s     = 2,107.40 s
+    TOTAL         = 7,350.28 s = ~2.04 hours
+
+COMPARISON:
+  +--------+------------------+------------+-------------+
+  |  b_b   | Block Transfers  |   Seeks    | Total Time  |
+  +--------+------------------+------------+-------------+
+  |   1    |   31,457,280     | 20,973,568 | 108,014 s   |
+  |        |                  |            | (~30 hrs)   |
+  +--------+------------------+------------+-------------+
+  |  100   |   52,428,800     |    421,480 |   7,350 s   |
+  |        |                  |            | (~2.0 hrs)  |
+  +--------+------------------+------------+-------------+
+
+  Despite 67% MORE block transfers, b_b = 100 is 14.7x FASTER
+  because seeks are reduced by 50x!
+
+
+(b) NUMBER OF MERGE PASSES:
+
+  b_b = 1:   ceil(log_{10239}(1024)) = 1 merge pass
+  b_b = 100: ceil(log_{101}(1024))   = 2 merge passes
+
+
+(c) FLASH STORAGE: latency = 20 microseconds, transfer = 400 MB/s
+
+  t_S = 0.00002 s (20 microseconds)
+  t_T = 4 KB / 400 MB/s = 0.00001 s = 10 microseconds per block
+
+  With b_b = 1 (same transfers and seeks as above):
+    Transfer cost = 31,457,280 * 0.00001 s = 314.57 s
+    Seek cost     = 20,973,568 * 0.00002 s = 419.47 s
+    TOTAL         = 734.04 s = ~12.2 minutes
+
+  With b_b = 100:
+    Transfer cost = 52,428,800 * 0.00001 s = 524.29 s
+    Seek cost     = 421,480 * 0.00002 s    = 8.43 s
+    TOTAL         = 532.72 s = ~8.9 minutes
+
+  FLASH SUMMARY:
+  +--------+------------------+------------+-------------+
+  |  b_b   | Block Transfers  |   Seeks    | Total Time  |
+  +--------+------------------+------------+-------------+
+  |   1    |   31,457,280     | 20,973,568 | 734 s       |
+  |        |                  |            | (~12 min)   |
+  +--------+------------------+------------+-------------+
+  |  100   |   52,428,800     |    421,480 | 533 s       |
+  |        |                  |            | (~9 min)    |
+  +--------+------------------+------------+-------------+
+
+  Key insight: With flash storage, the gap between b_b=1 and b_b=100
+  is much smaller (1.4x vs 14.7x on magnetic disk) because flash seeks
+  are 250x faster. On flash, b_b = 1 might even be preferred since it
+  requires fewer total passes and transfers.
+
+  Overall: Flash is 10-14x faster than magnetic disk for sorting.
+
+WHY THIS MATTERS:
+  The shift from magnetic disks to SSDs fundamentally changes query
+  optimization. Operations that were seek-bound on HDD become
+  transfer-bound on SSD. Buffer size tuning (b_b) matters much less
+  on SSDs. This is why modern databases increasingly optimize for
+  sequential throughput rather than seek avoidance.
+
+
+================================================================================
+  EXERCISE 15.18 — User vs. System Query Strategy Selection
+================================================================================
+
+PROBLEM: Why not force users to choose query-processing strategies?
+
+WHY IT IS NOT DESIRABLE:
+
+  1. COMPLEXITY: Users would need deep knowledge of:
+     - Available indices and their types (B+-tree, hash, bitmap)
+     - Relation sizes, block counts, and distributions
+     - Available memory and buffer pool state
+     - Disk layout and I/O characteristics
+     - Algorithm costs and tradeoffs
+
+  2. STATISTICS CHANGE: Optimal strategies change as data evolves.
+     What was best yesterday may not be best today.
+     - Relation sizes grow/shrink
+     - Data distributions shift (skew changes)
+     - Indices are added/removed
+     - Hardware upgrades change cost parameters
+
+  3. PHYSICAL DATA INDEPENDENCE: A core DBMS principle.
+     Applications should not depend on physical storage details.
+     If users embed strategy choices, changing the physical schema
+     (adding an index, reorganizing storage) would break queries.
+
+  4. MULTI-TABLE QUERIES: For complex queries with multiple joins,
+     the number of possible strategies is factorial in the number
+     of relations. Even experts cannot evaluate all alternatives.
+     Example: 10-table join has 10! = 3,628,800 join orderings.
+
+CASES WHERE COST AWARENESS IS DESIRABLE:
+
+  1. QUERY HINTS: Many systems allow optional hints:
+       SELECT /*+ USE_INDEX(student idx_dept) */ *
+       FROM student WHERE dept_name = 'CS';
+
+     Users who know the data well can guide the optimizer.
+
+  2. EXPLAIN PLANS: Users should understand query plans to:
+     - Identify missing indices
+     - Detect suboptimal query formulations
+     - Understand why a query is slow
+       EXPLAIN SELECT * FROM student JOIN takes ON student.ID = takes.ID;
+
+  3. QUERY FORMULATION: Users should understand that:
+     - EXISTS is often faster than IN for correlated subqueries
+     - Unnecessary DISTINCT adds sorting cost
+     - OR conditions may prevent index usage
+     - Proper JOIN conditions prevent Cartesian products
+
+  4. INDEX DESIGN: Database administrators need cost awareness to
+     decide which indices to create.
+
+  5. MATERIALIZED VIEWS: Deciding what to materialize requires
+     understanding access patterns and computation costs.
+
+WHY THIS MATTERS:
+  The query optimizer automates strategy selection, but understanding
+  costs helps users write better queries and design better schemas.
+  The ideal is: the system makes decisions automatically, but provides
+  transparency (EXPLAIN) for diagnosis and tuning.
+
+
+================================================================================
+  EXERCISE 15.19 — Hybrid Merge-Join with Sorted Secondary Indices
+================================================================================
+
+PROBLEM: Both r1 and r2 have sorted secondary B+-tree indices on the join
+attribute, but neither relation is physically sorted on that attribute.
+
+ALGORITHM DESIGN:
+
+  Standard merge join requires physically sorted relations.
+  Standard hybrid merge-join: one relation sorted, one with sorted index.
+
+  New variant: BOTH have sorted secondary indices, NEITHER physically sorted.
+
+  Key insight: Secondary index leaf nodes contain (key, pointer) pairs
+  in sorted order. We can merge the index leaf levels.
+
+  ALGORITHM:
+
+  Phase 1: Merge the two secondary index leaf levels.
+  ....................................................
+    - Scan both B+-tree leaf levels simultaneously (they are sorted on
+      the join attribute).
+    - For matching join values, collect pairs of record pointers:
+      (pointer_to_r1_tuple, pointer_to_r2_tuple)
+    - Write these pointer pairs to a temporary file.
+
+    This is like a merge join, but on the INDEX entries, not the tuples.
+
+  Phase 2: Sort pointer pairs by block address.
+  ..............................................
+    For each relation separately:
+    a. Sort the collected pointers for r1 by physical block address.
+    b. Sort the collected pointers for r2 by physical block address.
+
+    This ensures we read each block at most once per relation.
+
+  Phase 3: Fetch actual tuples.
+  .............................
+    a. Read r1 blocks in sorted block-address order.
+       For each block, extract all needed tuples.
+    b. Read r2 blocks in sorted block-address order.
+       For each block, extract all needed tuples.
+    c. Combine matched tuple pairs for output.
+
+  Alternative Phase 3 approach: sort pointer pairs by (r1_block, r2_block)
+  and process them in block order, reading each block only once.
+
+  VISUAL DIAGRAM:
+
+    r1's B+-tree index (leaf level, sorted on C):
+    [C=1,ptr_a] [C=3,ptr_b] [C=5,ptr_c] [C=7,ptr_d] ...
+
+    r2's B+-tree index (leaf level, sorted on C):
+    [C=2,ptr_x] [C=3,ptr_y] [C=5,ptr_z] [C=8,ptr_w] ...
+
+    Phase 1 merge:
+    C=3 matches: (ptr_b, ptr_y)
+    C=5 matches: (ptr_c, ptr_z)
+    -> temp file: [(ptr_b, ptr_y), (ptr_c, ptr_z)]
+
+    Phase 2: sort by block address
+    ptr_b -> block 47, ptr_c -> block 12
+    sorted r1 pointers: [ptr_c(blk12), ptr_b(blk47)]
+
+    ptr_y -> block 89, ptr_z -> block 23
+    sorted r2 pointers: [ptr_z(blk23), ptr_y(blk89)]
+
+    Phase 3: fetch tuples
+    Read r1 block 12 -> get tuple for ptr_c
+    Read r1 block 47 -> get tuple for ptr_b
+    Read r2 block 23 -> get tuple for ptr_z
+    Read r2 block 89 -> get tuple for ptr_y
+    Combine: (tuple_c, tuple_z), (tuple_b, tuple_y)
+
+WHY THIS MATTERS:
+  This algorithm avoids sorting the actual relations (which is expensive
+  for large relations). Instead, it leverages existing indices and uses
+  smart pointer sorting to minimize random I/O. The cost is proportional
+  to the index size plus the number of matching tuples, not the full
+  relation sizes.
+
+
+================================================================================
+  EXERCISE 15.20 — Cost Estimate for Exercise 15.19
+================================================================================
+
+Using r1 and r2 from Exercise 15.3:
+  r1(A,B,C): b_r1 = 800, n_r1 = 20,000
+  r2(C,D,E): b_r2 = 1500, n_r2 = 45,000
+
+Assume both have B+-tree secondary indices on C.
+Assume B+-tree heights: h_r1 = 3, h_r2 = 4 (typical for these sizes).
+
+Let n_match = number of matching tuple pairs in the join result.
+Let n_c = number of distinct matching C values.
+
+PHASE 1: Merge index leaf levels
+  Leaf level of r1 index: Each leaf block holds ~100 entries (key+pointer).
+  Leaf blocks for r1: ceil(20000 / 100) = 200 blocks
+  Leaf blocks for r2: ceil(45000 / 100) = 450 blocks
+
+  Block transfers = 200 + 450 = 650 (scan both leaf levels)
+  Seeks = 2 (one per index leaf-level scan start, then sequential)
+
+PHASE 2: Sort pointer pairs
+  Size of pointer pair file depends on n_match.
+  Assume n_match = 10,000 (reasonable for natural join).
+  Each pointer pair = ~16 bytes (two 8-byte pointers).
+  Temp file size = 10,000 * 16 = 160,000 bytes = ~40 blocks
+
+  Sort cost (small file, fits in memory): negligible I/O.
+  Write temp file: 40 transfers, 1 seek.
+  Read and sort: 40 transfers, 1 seek.
+
+PHASE 3: Fetch actual tuples
+  Worst case: each matched tuple is in a different block.
+  r1 tuples to fetch: up to n_match pointers -> up to min(n_match, b_r1)
+  = min(10,000, 800) = 800 block reads (every block of r1, worst case)
+  But sorted by block address, so 800 sequential reads:
+  Transfers = 800, Seeks = 1 (sequential) or up to 800 (if scattered)
+
+  Similarly for r2: up to min(10,000, 1500) = 1500 block reads.
+  Transfers = 1500, Seeks = 1 to 1500
+
+  In practice with sorted access: much fewer seeks.
+  Estimate: seeks = ceil(800/b_b) + ceil(1500/b_b)
+  With b_b = 1: 800 + 1500 = 2300 seeks
+  With b_b = 10: 80 + 150 = 230 seeks
+
+TOTAL COST ESTIMATE (b_b = 1):
+
+  +------------------+------------+--------+
+  | Phase            | Transfers  | Seeks  |
+  +------------------+------------+--------+
+  | 1: Index merge   |     650    |    2   |
+  | 2: Sort pointers |      80    |    2   |
+  | 3: Fetch tuples  |   2,300    | 2,300  |
+  +------------------+------------+--------+
+  | TOTAL            |   3,030    | 2,304  |
+  +------------------+------------+--------+
+
+  Cost = 3,030 * 0.1ms + 2,304 * 4ms
+       = 303 ms + 9,216 ms
+       = 9,519 ms = ~9.5 seconds
+
+COMPARISON WITH OTHER METHODS (from Exercise 15.3):
+  +---------------------+------------+--------+----------+
+  | Method              | Transfers  | Seeks  | Time(ms) |
+  +---------------------+------------+--------+----------+
+  | Nested-loop         | 30,000,800 | 20,800 | 3,083,280|
+  | Block nested-loop   |     24,800 |     32 |    2,608 |
+  | Merge join (full)   |      9,200 |  2,435 |   10,660 |
+  | Hash join           |      6,900 |  4,632 |   19,218 |
+  | Hybrid (15.19)      |      3,030 |  2,304 |    9,519 |
+  +---------------------+------------+--------+----------+
+
+  The hybrid approach with sorted indices is competitive with merge join
+  and potentially better because it avoids sorting the full relations.
+
+WHY THIS MATTERS:
+  When indices already exist, leveraging them can be significantly
+  cheaper than sorting from scratch. This is a key consideration in
+  query optimization: always check for existing access paths before
+  defaulting to sort-based or hash-based strategies.
+
+
+================================================================================
+  EXERCISE 15.21 — Hash Join Extensions for Outer Joins
+================================================================================
+
+EXTENDING HASH JOIN FOR OUTER JOINS:
+
+Standard hash join (inner join):
+  1. Partition both r and s using hash function h on join attribute.
+  2. For each partition i: build hash table on s_i, probe with r_i.
+  3. Output matching (r, s) pairs.
+
+Key addition: track which tuples have been matched using a "matched" flag.
+
+(A) LEFT OUTER JOIN (r LEFT OUTER JOIN s):
+...........................................
+
+  Modification: Every tuple in r appears in the output.
+  If no match in s, pad with nulls.
+
+  Algorithm:
+    Partition r and s using hash function h on join attribute.
+    for each partition i:
+        Build in-memory hash table on s_i
+        for each tuple t_r in r_i:
+            probed = false
+            for each matching tuple t_s in hash_table:
+                output (t_r, t_s)
+                probed = true
+            if not probed:
+                output (t_r, NULL, NULL, ...)   // pad s attributes with null
+
+  No extra bookkeeping needed for left outer join -- just check if each
+  r tuple found any match.
+
+
+(B) RIGHT OUTER JOIN (r RIGHT OUTER JOIN s):
+.............................................
+
+  Modification: Every tuple in s appears in the output.
+  If no match in r, pad with nulls.
+
+  Algorithm:
+    Partition r and s using hash function h on join attribute.
+    for each partition i:
+        Build in-memory hash table on s_i
+        ** Add a "matched" boolean flag to each s_i entry, init to false **
+
+        for each tuple t_r in r_i:
+            for each matching tuple t_s in hash_table:
+                output (t_r, t_s)
+                t_s.matched = true
+
+        // After processing all r_i tuples:
+        for each tuple t_s in hash_table:
+            if not t_s.matched:
+                output (NULL, NULL, ..., t_s)   // pad r attributes with null
+
+
+(C) FULL OUTER JOIN (r FULL OUTER JOIN s):
+...........................................
+
+  Modification: Every tuple in both r and s appears.
+  Unmatched tuples from either side padded with nulls.
+
+  Algorithm:
+    Partition r and s using hash function h on join attribute.
+    for each partition i:
+        Build in-memory hash table on s_i
+        Add "matched" flag to each s_i entry, init to false
+
+        for each tuple t_r in r_i:
+            r_matched = false
+            for each matching tuple t_s in hash_table:
+                output (t_r, t_s)
+                t_s.matched = true
+                r_matched = true
+            if not r_matched:
+                output (t_r, NULL, NULL, ...)    // left outer
+
+        for each tuple t_s in hash_table:
+            if not t_s.matched:
+                output (NULL, NULL, ..., t_s)    // right outer
+
+
+EXAMPLE with takes and student:
+
+  takes(ID, course_id, sec_id, semester, year, grade)
+  student(ID, name, dept_name, tot_cred)
+
+  FULL OUTER JOIN on ID:
+
+  Partition on h(ID):
+    Partition 0: takes tuples with h(ID)=0, student tuples with h(ID)=0
+    Partition 1: takes tuples with h(ID)=1, student tuples with h(ID)=1
+    ...
+
+  Processing partition 0:
+    Build hash table on student_0 entries:
+      {12345: ("Wu", "Finance", 110, matched=F),
+       67890: ("Park", "Physics", 45, matched=F)}
+
+    Probe with takes_0:
+      (12345, "CS101", "1", "Fall", 2017, "A"):
+        -> match with 12345 -> output joined tuple, set matched=T
+      (99999, "BIO101", "1", "Spring", 2018, "B"):
+        -> no match -> output (99999, "BIO101",..., NULL, NULL, NULL, NULL)
+
+    Scan hash table for unmatched:
+      67890: matched=F -> output (NULL,NULL,..., "Park", "Physics", 45)
+
+COST:
+  Same as standard hash join: 3(b_r + b_s) + 4*n_h block transfers
+  Plus small overhead for matched flags (1 bit per tuple in build relation).
+
+WHY THIS MATTERS:
+  Outer joins are essential for queries that must preserve all rows from
+  one or both sides (e.g., "list all students and their courses, including
+  students with no courses"). The flag-based extension adds minimal overhead
+  to the standard hash join.
+
+
+================================================================================
+  EXERCISE 15.22 — Computing Two Aggregations with a Single Sort
+================================================================================
+
+PROBLEM: Compute both aggregation_sum(C)(r) and aggregation_{A,B}_sum(C)(r)
+using a single sort of r.
+
+EXPLANATION:
+
+  aggregation_sum(C)(r):          Total sum of C over all tuples (scalar)
+  aggregation_{A,B}_sum(C)(r):    Sum of C for each (A,B) group
+
+  If we sort r on (A, B), we can compute BOTH in a single pass:
+
+ALGORITHM:
+
+  1. Sort r on (A, B).
+  2. Scan sorted r, maintaining:
+     - running_total: accumulates sum(C) across ALL tuples
+     - group_sum: accumulates sum(C) for current (A,B) group
+     - current_A, current_B: current group key
+
+  Pseudocode:
+    sort r on (A, B)
+
+    running_total = 0
+    group_sum = 0
+    current_A = null
+    current_B = null
+
+    for each tuple (a, b, c) in sorted r:
+        // Always accumulate overall total
+        running_total += c
+
+        // Check if we've entered a new group
+        if a != current_A or b != current_B:
+            if current_A is not null:
+                output_group_result(current_A, current_B, group_sum)
+            current_A = a
+            current_B = b
+            group_sum = 0
+
+        group_sum += c
+
+    // Output last group
+    if current_A is not null:
+        output_group_result(current_A, current_B, group_sum)
+
+    // Output overall total
+    output_total_result(running_total)
+
+EXAMPLE:
+
+  Relation r(A, B, C):
+    +---+---+----+
+    | A | B |  C |
+    +---+---+----+
+    | x | 1 | 10 |
+    | x | 1 | 20 |
+    | x | 2 | 30 |
+    | y | 1 | 40 |
+    | y | 1 | 50 |
+    +---+---+----+
+
+  After sorting on (A,B) (already sorted above):
+
+  Processing:
+    (x,1,10): running=10,  group_sum=10, group=(x,1)
+    (x,1,20): running=30,  group_sum=30, group=(x,1)
+    -> new group: output (x,1,30)
+    (x,2,30): running=60,  group_sum=30, group=(x,2)
+    -> new group: output (x,2,30)
+    (y,1,40): running=100, group_sum=40, group=(y,1)
+    (y,1,50): running=150, group_sum=90, group=(y,1)
+    -> end: output (y,1,90)
+
+  Results:
+    GROUP BY (A,B) SUM(C):    TOTAL SUM(C):
+    +---+---+--------+       +-----+
+    | A | B | sum(C) |       | 150 |
+    +---+---+--------+       +-----+
+    | x | 1 |   30   |
+    | x | 2 |   30   |
+    | y | 1 |   90   |
+    +---+---+--------+
+
+  Both computed with ONE sort + ONE scan!
+
+GENERALIZATION:
+  This approach works for any combination of:
+  - Global aggregate (no group by)
+  - Group-by aggregate on the sort columns
+  - Group-by aggregate on a PREFIX of the sort columns
+    (e.g., if sorted on (A,B), can also compute GROUP BY A)
+
+  Sort on (A,B) enables simultaneous computation of:
+    - GROUP BY (A,B) agg(C)
+    - GROUP BY (A) agg(C)      [superset groups = prefix]
+    - Overall agg(C)           [no grouping]
+
+WHY THIS MATTERS:
+  OLAP queries often compute multiple levels of aggregation (like
+  ROLLUP or CUBE). Sharing a single sort across multiple aggregations
+  dramatically reduces I/O cost. This is the basis for the SQL
+  ROLLUP and CUBE operations.
+
+
+================================================================================
+  EXERCISE 15.23 — Sort-Merge Iterator with Pipelined Final Merge
+================================================================================
+
+The idea: perform all sort passes except the final merge materializing
+intermediate results. The final merge is pipelined -- it produces one
+tuple at a time via next() calls.
+
+STATE VARIABLES:
+  - runs[]:         array of file handles to sorted runs
+  - buffers[][]:    input buffer blocks for each run (b_b blocks each)
+  - out_buffer[]:   output buffer block
+  - heap:           min-heap of (key, run_index) for merge
+  - buf_pos[]:      current position within each run's buffer
+  - buf_end[]:      end position of valid data in each buffer
+  - num_runs:       number of runs to merge
+  - M:              available memory blocks
+  - sort_attr:      attribute to sort on
+  - input_iter:     iterator for the input relation
+  - sorted_runs_created: boolean flag
+
+----------------------------------------------------------------------
+  OPEN():
+      // Phase 1: Create sorted runs
+      input_iter.open()
+      num_runs = 0
+
+      // Read M blocks at a time, sort in memory, write to run file
+      while more data from input_iter:
+          fill M memory blocks from input_iter
+          sort the M blocks on sort_attr (in-memory quicksort)
+          write sorted blocks to run file runs[num_runs]
+          num_runs++
+      input_iter.close()
+
+      // Phase 2: Perform all merge passes except the final one
+      while num_runs > M - 1:
+          new_runs = []
+          for i = 0 to num_runs step (M-1):
+              merge runs[i .. min(i+M-2, num_runs-1)] into new_run
+              new_runs.append(new_run)
+          runs = new_runs
+          num_runs = length(runs)
+
+      // Phase 3: Set up for final pipelined merge
+      // Now num_runs <= M-1, so all runs fit in memory buffers
+      heap = new MinHeap()
+      for i = 0 to num_runs - 1:
+          open runs[i] for reading
+          read first block into buffers[i]
+          buf_pos[i] = 0
+          if buffers[i] has tuples:
+              heap.insert( (buffers[i][0].sort_attr, i) )
+
+      sorted_runs_created = true
+----------------------------------------------------------------------
+
+----------------------------------------------------------------------
+  NEXT():
+      if heap is empty:
+          return END_OF_RELATION
+
+      // Extract minimum from heap
+      (min_key, run_idx) = heap.extractMin()
+      result_tuple = buffers[run_idx][buf_pos[run_idx]]
+      buf_pos[run_idx]++
+
+      // If current buffer block exhausted, read next block from run
+      if buf_pos[run_idx] >= buf_end[run_idx]:
+          read next block from runs[run_idx] into buffers[run_idx]
+          buf_pos[run_idx] = 0
+          if block has data:
+              buf_end[run_idx] = number of tuples in block
+          else:
+              buf_end[run_idx] = 0  // run exhausted
+
+      // If run still has tuples, insert next key into heap
+      if buf_pos[run_idx] < buf_end[run_idx]:
+          next_key = buffers[run_idx][buf_pos[run_idx]].sort_attr
+          heap.insert( (next_key, run_idx) )
+
+      return result_tuple
+----------------------------------------------------------------------
+
+----------------------------------------------------------------------
+  CLOSE():
+      for i = 0 to num_runs - 1:
+          close runs[i]
+          delete temporary run file runs[i]
+      free all buffers
+      heap = null
+----------------------------------------------------------------------
+
+EXECUTION TRACE:
+
+  Suppose after all pre-merge passes, we have 3 final runs:
+    Run 0: [1, 4, 7]
+    Run 1: [2, 5, 8]
+    Run 2: [3, 6, 9]
+
+  open():
+    Heap initialized: [(1,0), (2,1), (3,2)]
+
+  next() call 1:
+    Extract (1,0) -> return tuple with key=1
+    Insert (4,0) into heap
+    Heap: [(2,1), (3,2), (4,0)]
+
+  next() call 2:
+    Extract (2,1) -> return tuple with key=2
+    Insert (5,1) into heap
+    Heap: [(3,2), (4,0), (5,1)]
+
+  next() call 3:
+    Extract (3,2) -> return tuple with key=3
+    Insert (6,2)
+    Heap: [(4,0), (5,1), (6,2)]
+
+  ... continues producing sorted output one tuple at a time ...
+
+  next() call 9:
+    Extract (9,2) -> return tuple with key=9
+    Run 2 exhausted, nothing to insert.
+    Heap: empty
+
+  next() call 10:
+    Heap empty -> return END_OF_RELATION
+
+BENEFIT OF PIPELINING THE FINAL MERGE:
+  - No need to write the final sorted output to disk.
+  - Saves b_r block transfers and associated seeks for the final write.
+  - The downstream operator (e.g., merge join) can consume tuples
+    immediately as they are produced.
+  - Memory requirement: one buffer block per run + output buffer
+    = num_runs + 1 blocks during the final merge.
+
+WHY THIS MATTERS:
+  Pipelining the final merge pass saves one complete read+write of the
+  relation. For a 1500-block relation, this saves 1500 writes + 1500
+  reads = 3000 block transfers. Combined with pipelined merge join,
+  this can avoid materializing sorted intermediate results entirely.
+
+
+================================================================================
+  EXERCISE 15.24 — Splitting Hybrid Hash Join for Pipelining
+================================================================================
+
+PROBLEM: Explain how to split hybrid hash join into sub-operators for
+pipelining. How does this differ from regular hash join?
+
+BACKGROUND:
+
+  Regular hash join:
+    Phase 1 (Partition): Hash both r and s into n partitions using h.
+                         Write ALL partitions to disk.
+    Phase 2 (Build+Probe): For each partition i, build hash table on s_i,
+                           probe with r_i.
+
+  Hybrid hash join optimization:
+    Phase 1: Keep partition 0 of the BUILD relation (s) in memory.
+             Write partitions 1..n to disk for both r and s.
+             While partitioning r, directly probe partition 0's in-memory
+             hash table for r tuples hashing to partition 0.
+    Phase 2: Process remaining partitions 1..n as in regular hash join.
+
+SPLITTING REGULAR HASH JOIN FOR PIPELINING:
+
+  Sub-operator 1: Partition both relations
+    - Input: r (pipelined), s (pipelined or materialized)
+    - Output: n partition files for r, n partition files for s
+    - This sub-operator must see ALL input before producing output.
+    - It is a PIPELINE BREAKER (blocking operator).
+
+  Sub-operator 2: Build and probe for each partition
+    - Input: partition files from sub-operator 1
+    - Output: joined tuples (can be pipelined out)
+    - For partition i: build hash table on s_i, probe with r_i.
+
+SPLITTING HYBRID HASH JOIN FOR PIPELINING:
+
+  Sub-operator 1a: Build-side partitioning + partition 0 hash table
+    - Read entire build relation s.
+    - Keep partition 0 in memory as a hash table.
+    - Write partitions 1..n to disk.
+    - This is a pipeline breaker for s (must see all of s).
+
+  Sub-operator 1b: Probe-side partitioning + partition 0 probing
+    - Input: r tuples (can be PIPELINED in)
+    - For each r tuple:
+      * If h(r) = 0: probe in-memory hash table -> output match immediately!
+      * If h(r) = i > 0: write to partition file r_i
+    - Output: matched tuples from partition 0 are PIPELINED out immediately.
+    - Partition files r_1..r_n written to disk.
+
+  Sub-operator 2: Process remaining partitions
+    - Same as regular hash join for partitions 1..n.
+    - Can pipeline output tuples.
+
+KEY DIFFERENCE FROM REGULAR HASH JOIN:
+
+  +--------------------------------+-------------------+-------------------+
+  | Property                       | Regular Hash Join  | Hybrid Hash Join  |
+  +--------------------------------+-------------------+-------------------+
+  | Partition 0 during Phase 1     | Written to disk   | Kept in memory    |
+  +--------------------------------+-------------------+-------------------+
+  | Probe output during Phase 1    | None (all later)  | Partition 0 output|
+  |                                |                   | produced EARLY    |
+  +--------------------------------+-------------------+-------------------+
+  | Pipelining of probe input      | Must partition all| Can output some   |
+  |                                | before any output | results while     |
+  |                                |                   | still partitioning|
+  +--------------------------------+-------------------+-------------------+
+  | I/O for partition 0            | 2(b_r0 + b_s0)   | 0 (stays in mem)  |
+  +--------------------------------+-------------------+-------------------+
+
+  The hybrid approach allows PARTIAL pipelining: results from partition 0
+  flow out immediately, while other partitions are materialized. This
+  reduces latency to first result and saves I/O for the largest partition.
+
+DIAGRAM:
+
+  Regular hash join:                 Hybrid hash join:
+  r tuples ---> [Partition ALL] --> disk    r tuples --> [Partition] --> disk (1..n)
+  s tuples ---> [Partition ALL] --> disk                      |
+  then: disk --> [Build+Probe] --> output        partition 0: immediate probe!
+                                                              |
+                                                         output (partial)
+                                               then: disk --> [Build+Probe] --> output
+
+  Time to first result:
+    Regular:   after ALL partitioning + first partition processed
+    Hybrid:    as soon as first r tuple matches partition 0!
+
+WHY THIS MATTERS:
+  Hybrid hash join is the most commonly used join algorithm in modern
+  databases. Its ability to partially pipeline results is crucial for
+  interactive queries where the user wants to see initial results quickly.
+
+
+================================================================================
+  EXERCISE 15.25 — Sort-Merge with Pipelined Sort and Shared Memory
+================================================================================
+
+(a) BREAKING SORT INTO SUBOPERATORS FOR PIPELINING:
+
+  Goal: Sort relation r using sort-merge, then merge-join with already-sorted
+  relation s. We want to pipeline the sort output into the merge join.
+
+  Sub-operator 1: Run Generation (pipeline breaker for input)
+    - Read input relation r in chunks of M blocks.
+    - Sort each chunk in memory.
+    - Write sorted runs to disk.
+    - This is blocking: must consume entire input.
+
+  Sub-operator 2: Intermediate Merge Passes (if needed)
+    - If number of runs > M-1, perform merge passes to reduce run count.
+    - Each pass reads all runs and writes fewer, larger runs.
+    - These are pipeline breakers: must complete before next pass.
+
+  Sub-operator 3: Final Merge (PIPELINED output)
+    - When runs <= M-1, set up for final merge.
+    - Allocate one input buffer per run.
+    - Use a min-heap to produce tuples in sorted order.
+    - Output tuples ONE AT A TIME via next() calls.
+    - This sub-operator is pipelined: its output feeds directly into
+      the merge join without materialization.
+
+  Pipeline structure:
+    [Run Gen] --> disk --> [Intermediate Merges] --> disk --> [Final Merge]
+                                                                   |
+                                                              (pipelined)
+                                                                   |
+                                                                   v
+                                                           [Merge Join] <-- s (sorted)
+                                                                   |
+                                                              (pipelined)
+                                                                   v
+                                                                output
+
+
+(b) SHARED MEMORY WHEN BOTH INPUTS ARE SORT-MERGE OUTPUTS:
+
+  If both inputs to the merge join are outputs of sort-merge operations
+  (i.e., both r and s need sorting), memory must be shared:
+
+  Setup:
+    Sort-merge of r: needs memory for final merge of r's runs
+    Sort-merge of s: needs memory for final merge of s's runs
+    Merge join: needs buffer blocks for output
+
+  Memory allocation:
+    - r has R_r final runs -> needs R_r buffer blocks (one per run)
+    - s has R_s final runs -> needs R_s buffer blocks (one per run)
+    - Merge join output: 1 buffer block
+    - Total needed: R_r + R_s + 1
+
+    Available: M blocks
+
+    Constraint: R_r + R_s + 1 <= M
+
+  EFFECT ON SORT-MERGE COST:
+
+  Without sharing (each sort gets M blocks independently):
+    Sort of r: M blocks for run creation, M-1 fan-in per merge pass
+    Sort of s: M blocks for run creation, M-1 fan-in per merge pass
+
+  With sharing (each sort gets M/2 blocks):
+    Sort of r: M/2 blocks for run creation -> MORE initial runs
+               Fan-in for intermediate merges: M/2 - 1
+    Sort of s: M/2 blocks for run creation -> MORE initial runs
+               Fan-in for intermediate merges: M/2 - 1
+
+    During final merge:
+      r gets M_r = M/2 buffer blocks -> final fan-in = M_r - 1
+      s gets M_s = M/2 buffer blocks -> final fan-in = M_s - 1
+      (roughly M_r + M_s = M - 1)
+
+  CONCRETE EXAMPLE (M = 100, b_r = 800, b_s = 1500):
+
+  Independent sorting (full M = 100 each):
+    r: runs = ceil(800/100) = 8,  merge passes = ceil(log_99(8)) = 1
+    s: runs = ceil(1500/100) = 15, merge passes = ceil(log_99(15)) = 1
+    Total passes for r: 2 (creation + 1 merge)
+    Total passes for s: 2 (creation + 1 merge)
+
+  Shared memory (M/2 = 50 each for run creation):
+    r: runs = ceil(800/50) = 16,  intermediate merges with fan-in 49
+       merge passes = ceil(log_49(16)) = 1
+    s: runs = ceil(1500/50) = 30, intermediate merges with fan-in 49
+       merge passes = ceil(log_49(30)) = 1
+
+    Final merge needs: 16 + 30 + 1 = 47 blocks (fits in M = 100!)
+
+    If 47 <= M, one final pipelined merge pass works.
+
+  COST IMPACT:
+    +------------------+----------+----------+------------+
+    |                  | Indep.   | Shared   | Difference |
+    +------------------+----------+----------+------------+
+    | r initial runs   |    8     |   16     | 2x more    |
+    | s initial runs   |   15     |   30     | 2x more    |
+    | r merge passes   |    1     |    1     | same       |
+    | s merge passes   |    1     |    1     | same       |
+    | r sort transfers | 800*3=   | 800*3=   | same       |
+    |                  | 2400     | 2400     |            |
+    | s sort transfers | 1500*3=  | 1500*3=  | same       |
+    |                  | 4500     | 4500     |            |
+    | r sort seeks     | 2*8=16   | 2*16=32  | 2x more    |
+    | s sort seeks     | 2*15=30  | 2*30=60  | 2x more    |
+    +------------------+----------+----------+------------+
+
+    In this example, the number of merge passes stays the same, so the
+    transfer cost is identical. However, seeks double during run creation
+    (more, smaller runs). If reducing memory further causes an ADDITIONAL
+    merge pass, cost increases substantially:
+
+    Extra merge pass cost = 2 * b_r (or b_s) additional transfers.
+
+  WORST CASE: If M is very limited and sharing causes an extra merge pass:
+    Cost increase = 2 * (b_r + b_s) additional block transfers
+    = 2 * (800 + 1500) = 4,600 additional transfers
+    = 460 ms additional time
+
+    Plus additional seeks for the extra pass.
+
+  OPTIMIZATION: Unequal memory allocation.
+    Instead of M/2 each, allocate proportionally:
+    M_r = M * R_r / (R_r + R_s), M_s = M * R_s / (R_r + R_s)
+    This balances the fan-in requirements.
+
+WHY THIS MATTERS:
+  In real query execution plans, multiple operators compete for the same
+  buffer pool. Understanding how memory sharing affects sort-merge cost
+  is essential for memory-aware query optimization. Modern databases use
+  memory grants and admission control to manage this tradeoff.
+
+
+================================================================================
+  END OF CHAPTER 15 SOLUTIONS
+================================================================================
+
+  Summary of Key Takeaways:
+
+  1. COST MODEL: b * t_T + S * t_S. Seeks often dominate on magnetic disk.
+     On SSDs, the balance shifts toward transfer cost.
+
+  2. JOIN ALGORITHMS ranked by typical efficiency:
+     Hash join >= Merge join > Block nested-loop >> Nested-loop
+
+  3. MEMORY IS KING: More memory -> fewer passes, fewer seeks, less I/O.
+     With infinite memory, any join costs just b_r + b_s transfers.
+
+  4. PIPELINING eliminates materialization of intermediate results.
+     Demand-driven is better for top-K; producer-driven better for
+     instruction cache locality.
+
+  5. COLUMN STORES excel at analytical queries touching few columns
+     from wide tables. They need fundamentally different join strategies
+     (late materialization, vectorized execution).
+
+  6. INDEX AWARENESS: Existing indices (B+-trees, hash) can dramatically
+     reduce join and selection costs. The optimizer must consider all
+     available access paths.
+
+  7. BUFFER BLOCK SIZE (b_b): Increasing b_b reduces seeks at cost of
+     reduced fan-in. On magnetic disk, moderate b_b (10-100) is optimal.
+     On SSD, b_b matters much less.
+
+================================================================================

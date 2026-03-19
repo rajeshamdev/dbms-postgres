@@ -1,0 +1,1223 @@
+Chapter 14: Indexing — Complete Exercise Solutions (Enhanced Edition)
+Database System Concepts, 7th Edition (Silberschatz, Korth, Sudarshan)
+=====================================================================
+
+
+========================================
+PRACTICE EXERCISES (14.1 - 14.15)
+========================================
+
+
+Exercise 14.1
+--------------
+Q: Indices speed query processing, but it is usually a bad idea to create
+   indices on every attribute, and every combination of attributes, that
+   are potential search keys. Explain why.
+
+A: Three main reasons:
+
+1. SPACE OVERHEAD
+
+Every index is a separate data structure stored on disk. For a table
+with n attributes, the number of possible indices (single + composite)
+is 2^n - 1.
+
+CONCRETE EXAMPLE — Why 2^n - 1?
+
+Take an employees table with 4 columns:
+
+  Column:   A            B      C      D
+  Meaning:  employee_id  name   dept   salary
+
+For each column, you have a binary choice: include it in the index or not.
+
+All possible indices:
+  Single:  (A), (B), (C), (D)                           = 4
+  Two:     (A,B), (A,C), (A,D), (B,C), (B,D), (C,D)    = 6
+  Three:   (A,B,C), (A,B,D), (A,C,D), (B,C,D)          = 4
+  Four:    (A,B,C,D)                                     = 1
+  Total = 15 = 2^4 - 1
+
+The only combination we skip: choosing NONE (the empty set).
+
+How it scales:
+
+  Columns (n)  |  Possible Indices (2^n - 1)
+  -------------|----------------------------
+  4            |  15
+  5            |  31
+  10           |  1,023
+  20           |  1,048,575
+  30           |  ~1 billion
+
+Your employees table has 10 columns -- that is 1,023 possible indices.
+If each index is even 1MB, that is 1GB of index space for a table that
+might itself be only a few hundred MB.
+
+IMPORTANT CAVEAT: Order matters for composite indices in practice:
+
+  Index on (name, salary)  !=  Index on (salary, name)
+
+  WHERE name = 'Jane' AND salary > 50000
+  benefits from (name, salary) but NOT from (salary, name).
+
+If we count ordered permutations, n=4 gives 64 (not 15).
+
+2. UPDATE COST (Insertion/Deletion/Modification)
+
+Every time a row is inserted, deleted, or updated, every index on that
+table must also be updated. More indices = slower writes.
+
+Example: if a table has 10 indices and you insert 1 row:
+- 1 write to the heap table
+- 10 index updates (each potentially requiring B+ tree splits)
+
+This turns a fast single insert into 11 I/O-heavy operations.
+
+3. MOST INDICES WOULD RARELY (OR NEVER) BE USED
+
+Not all attributes appear in WHERE clauses, JOIN conditions, or
+ORDER BY clauses. An index on a column that is never searched on
+provides zero query benefit while still paying the full update cost.
+
+  -- This index is useful:
+  CREATE INDEX idx_dept ON employees(dept);
+  SELECT * FROM employees WHERE dept = 'Engineering';  -- uses the index
+
+  -- This index is wasted:
+  CREATE INDEX idx_phone ON employees(phone);
+  -- No query ever filters by phone number
+
+SUMMARY:
+
+  Factor       |  More indices =
+  -------------|------------------------------------------
+  Query reads  |  Faster (if the index is actually used)
+  Writes       |  Slower (every index must be maintained)
+  Disk space   |  More consumption
+  Net effect   |  Only worth it if read benefit > write cost
+
+WHY THIS MATTERS: A database designer must balance query frequency
+against update overhead, creating indices only on attributes that
+are actually queried frequently.
+
+
+Exercise 14.2
+--------------
+Q: Is it possible in general to have two clustering indices on the same
+   relation for different search keys? Explain your answer.
+
+A: No. A clustering index is one whose search key defines the PHYSICAL
+SORT ORDER of records on disk. A file can only be physically sorted
+in ONE order at a time.
+
+CONCRETE EXAMPLE:
+
+  If sorted by employee_id:
+    | 1   | Alice | Engineering | 90000 |
+    | 2   | Bob   | Sales       | 60000 |
+    | 3   | Carol | Engineering | 85000 |
+    | 4   | Dave  | Marketing   | 70000 |
+
+  If sorted by dept_name:
+    | 3   | Carol | Engineering | 85000 |
+    | 1   | Alice | Engineering | 90000 |
+    | 4   | Dave  | Marketing   | 70000 |
+    | 2   | Bob   | Sales       | 60000 |
+
+These are two different physical orderings. You cannot have both
+simultaneously -- the rows exist on disk in exactly one sequence.
+
+VISUAL ANALOGY — Books on a shelf:
+
+  Sorted by author:  [Austen] [Dickens] [Hemingway] [Tolkien]
+  Sorted by title:   [Great Expectations] [LOTR] [Old Man] [Pride]
+
+The books can sit on the shelf in ONE order only. You can create a
+separate card catalog (secondary index) sorted by title, but the
+physical books are arranged one way.
+
+COMPARISON TABLE:
+
+  Property                       | Clustering Index      | Secondary Index
+  -------------------------------|----------------------|------------------
+  Physical order matches index?  | Yes                  | No
+  Can be sparse?                 | Yes                  | No (must be dense)
+  Range scan efficiency          | Fast (sequential I/O)| Slow (random I/O)
+  How many per table?            | At most 1            | As many as needed
+
+WHY RANGE SCANS SHOW THE DIFFERENCE:
+
+  -- With clustering index on employee_id:
+  SELECT * FROM employees WHERE employee_id BETWEEN 100 AND 200;
+  -- Records 100-200 are physically adjacent -> 2-3 sequential block reads
+
+  -- With secondary index on salary:
+  SELECT * FROM employees WHERE salary BETWEEN 60000 AND 80000;
+  -- Matching records scattered across many blocks -> 1 random I/O per record
+
+EXCEPTION: Some databases can maintain a second physical COPY of the
+table sorted differently (e.g., PostgreSQL CLUSTER, materialized views).
+But that is two copies of data, not two clustering indices on the same
+relation.
+
+
+Exercise 14.3
+--------------
+Q: Construct a B+-tree for key values (2, 3, 5, 7, 11, 17, 19, 23, 29, 31)
+   inserted in ascending order, for n = 4, 6, and 8.
+
+KEY RULES for B+-tree of order n:
+
+  Property                       | Constraint
+  -------------------------------|---------------------
+  Max keys per node              | n - 1
+  Max pointers per node          | n
+  Min keys in leaf               | ceil((n-1)/2)
+  Min pointers in internal node  | ceil(n/2)
+  Root (non-leaf)                | at least 2 pointers
+
+(a) n = 4 -- max 3 keys/node, min 2 keys/leaf
+
+Step-by-step insertion:
+
+Insert 2, 3, 5: leaf fills to [2, 3, 5] (3 keys = max)
+
+Insert 7: leaf overflows -> split
+        [5]
+       /   \
+   [2,3]  [5,7]
+
+Insert 11: -> [5, 7, 11] (fits)
+
+Insert 17: leaf [5,7,11] overflows -> split, push up 11
+      [5, 11]
+     /   |    \
+ [2,3] [5,7] [11,17]
+
+Insert 19: -> [11, 17, 19] (fits)
+
+Insert 23: leaf [11,17,19] overflows -> split, push up 19
+      [5, 11, 19]
+     /   |    |    \
+ [2,3] [5,7] [11,17] [19,23]
+
+Root at max capacity (3 keys, 4 pointers).
+
+Insert 29: -> [19, 23, 29] (fits)
+
+Insert 31: leaf [19,23,29] overflows -> split, push up 29.
+But root [5, 11, 19] is full -- ROOT SPLITS!
+
+Overflowed root keys: [5, 11, 19, 29]
+Split at position ceil(n/2) = 2 -> push up 11
+
+FINAL TREE:
+                    [11]
+                   /    \
+               [5]      [19, 29]
+              /   \    /   |     \
+          [2,3] [5,7] [11,17] [19,23] [29,31]
+
+Leaf linked list: [2,3] -> [5,7] -> [11,17] -> [19,23] -> [29,31]
+
+Verification:
+- Root [11]: 1 key, 2 pointers (root needs >= 2) OK
+- Internal [5]: 1 key, 2 pointers (min ceil(4/2) = 2) OK
+- Internal [19,29]: 2 keys, 3 pointers OK
+- All leaves have 2 keys (min ceil(3/2) = 2, max 3) OK
+
+
+(b) n = 6 -- max 5 keys/node, min 3 keys/leaf
+
+Insert 2,3,5,7,11: leaf fills to [2,3,5,7,11] (5 = max)
+
+Insert 17: overflow -> split at ceil(6/2) = 3
+          [7]
+         /   \
+   [2,3,5]  [7,11,17]
+
+Insert 19, 23: -> [7,11,17,19,23] (fits, 5 = max)
+
+Insert 29: overflow -> split, push up 19
+        [7, 19]
+       /   |    \
+ [2,3,5] [7,11,17] [19,23,29]
+
+Insert 31: -> [19,23,29,31] (fits)
+
+FINAL TREE:
+          [7, 19]
+         /   |    \
+   [2,3,5] [7,11,17] [19,23,29,31]
+
+Verification: Root has 3 pointers OK. All leaves >= 3 keys OK.
+
+
+(c) n = 8 -- max 7 keys/node, min 4 keys/leaf
+
+Insert 2,3,5,7,11,17,19: leaf fills to [2,3,5,7,11,17,19] (7 = max)
+
+Insert 23: overflow -> split at ceil(8/2) = 4
+              [11]
+             /    \
+     [2,3,5,7]  [11,17,19,23]
+
+Insert 29, 31: -> [11,17,19,23,29,31] (fits, 6 <= 7 max)
+
+FINAL TREE:
+              [11]
+             /    \
+     [2,3,5,7]  [11,17,19,23,29,31]
+
+Verification: Leaves have 4 and 6 keys (min ceil(7/2) = 4) OK.
+
+
+KEY INSIGHT -- Larger n = Shallower Tree:
+
+  Order (n) | Tree Height | Number of Nodes
+  ----------|-------------|----------------
+  4         | 3 levels    | 8 nodes
+  6         | 2 levels    | 4 nodes
+  8         | 2 levels    | 3 nodes
+
+WHY THIS MATTERS: Real databases use large n values (sized so one node
+= one disk page = 4-16 KB, fitting hundreds of keys). This gives tree
+heights of 3-4 even for billions of records = 3-4 disk I/Os per lookup.
+
+
+Exercise 14.4
+--------------
+Q: For each B+-tree of Exercise 14.3, show the form of the tree after:
+   a. Insert 9    b. Insert 10    c. Insert 8    d. Delete 23    e. Delete 19
+
+CASE n = 4 (starting from 14.3a final tree):
+
+(a) Insert 9:
+   9 goes into leaf [5,7] (since 5 <= 9 < 11) -> becomes [5,7,9]. Fits.
+
+                    [11]
+                   /    \
+               [5]      [19, 29]
+              /   \    /   |     \
+          [2,3] [5,7,9] [11,17] [19,23] [29,31]
+
+(b) Insert 10 (into tree from 14.4a):
+   10 goes into [5,7,9] -> overflows [5,7,9,10] -> SPLIT
+   Left: [5,7], Right: [9,10], push up 9
+
+                    [11]
+                   /    \
+              [5, 9]     [19, 29]
+             /  |   \   /   |     \
+         [2,3] [5,7] [9,10] [11,17] [19,23] [29,31]
+
+(c) Insert 8 (into tree from 14.4b):
+   8 goes into [5,7] (since 5 <= 8 < 9) -> becomes [5,7,8]. Fits.
+
+                    [11]
+                   /    \
+              [5, 9]     [19, 29]
+             /  |   \   /   |     \
+         [2,3] [5,7,8] [9,10] [11,17] [19,23] [29,31]
+
+(d) Delete 23 (from tree in 14.4c):
+   Remove 23 from leaf [19,23] -> [19]. Only 1 key, min is 2. UNDERFLOW!
+   Right sibling [29,31] has exactly min (2 keys). Cannot borrow.
+   Left sibling [11,17] under different parent. Cannot borrow.
+   MERGE [19] with right sibling [29,31] -> [19,29,31].
+   Remove separator 29 from parent. Parent [19,29] becomes [19].
+
+                    [11]
+                   /    \
+              [5, 9]     [19]
+             /  |   \   /    \
+         [2,3] [5,7,8] [9,10] [11,17] [19,29,31]
+
+(e) Delete 19 (from tree in 14.4d):
+   Remove 19 from [19,29,31] -> [29,31]. Has 2 keys >= min. OK.
+   But separator key 19 in parent no longer exists in any leaf.
+   Update parent separator to 29 (smallest key in right subtree).
+
+                    [11]
+                   /    \
+              [5, 9]     [29]
+             /  |   \   /    \
+         [2,3] [5,7,8] [9,10] [11,17] [29,31]
+
+
+CASE n = 6:
+
+Starting tree:    [7, 19]
+                 /   |    \
+           [2,3,5] [7,11,17] [19,23,29,31]
+
+(a) Insert 9: [7,11,17] -> [7,9,11,17]. Fits.
+(b) Insert 10: [7,9,11,17] -> [7,9,10,11,17]. Fits (5 = max).
+(c) Insert 8: [7,8,9,10,11,17] overflow -> split.
+    Left: [7,8,9], Right: [10,11,17], push up 10.
+    Tree becomes: [7, 10, 19] with 4 children.
+(d) Delete 23: [19,23,29,31] -> [19,29,31]. 3 keys >= min (3). OK.
+(e) Delete 19: [19,29,31] -> [29,31]. 2 keys < min (3). UNDERFLOW!
+    Merge with left sibling [10,11,17] -> [10,11,17,29,31].
+    Final: [7, 10] with 3 children.
+
+
+CASE n = 8:
+
+Starting tree:       [11]
+                    /    \
+            [2,3,5,7]  [11,17,19,23,29,31]
+
+(a-c) Insert 9, 10, 8: all fit into [2,3,5,7] -> [2,3,5,7,8,9,10]. Max.
+(d) Delete 23: [11,17,19,23,29,31] -> [11,17,19,29,31]. 5 >= min (4). OK.
+(e) Delete 19: -> [11,17,29,31]. 4 = min. OK.
+
+Final:       [11]
+            /    \
+    [2,3,5,7,8,9,10]  [11,17,29,31]
+
+
+Exercise 14.5
+--------------
+Q: Consider the modified redistribution scheme for B+-trees. What is the
+   expected height of the tree as a function of n?
+
+A: The modified redistribution scheme: before splitting, try to
+redistribute keys with a sibling. Only split (into 3 nodes from 2) if
+the sibling is also full. This guarantees nodes are at least 2/3 full.
+
+COMPARISON:
+
+  Scheme           | Min children per node | Height formula
+  -----------------|-----------------------|---------------------------
+  Standard B+-tree | ceil(n/2)             | 1 + ceil(log_{ceil(n/2)}(K/2))
+  Redistribution   | ceil(2n/3)            | 1 + ceil(log_{ceil(2n/3)}(K/2))
+
+  where K = number of search key values.
+
+EXAMPLE with n = 100, K = 10,000,000 records:
+
+  Standard:
+    Min children = ceil(100/2) = 50
+    Height = 1 + ceil(log_50(5,000,000)) = 1 + ceil(3.94) = 5
+
+  Redistribution:
+    Min children = ceil(200/3) = 67
+    Height = 1 + ceil(log_67(5,000,000)) = 1 + ceil(3.67) = 5
+
+  For K = 1 billion:
+    Standard: 1 + ceil(log_50(500M)) = 1 + ceil(5.12) = 7
+    Redistribution: 1 + ceil(log_67(500M)) = 1 + ceil(4.76) = 6
+
+WHY THIS MATTERS: One fewer tree level = one fewer disk I/O per lookup.
+For a system handling 10,000 queries/second, saving 1 I/O per query
+= saving 10,000 disk reads/second.
+
+
+Exercise 14.6
+--------------
+Q: Give pseudocode for a B+-tree function findRangeIterator() and the
+   iterator class with next() method.
+
+A: EXAMPLE USE CASE:
+
+  -- Find all employees with salary between 60000 and 80000
+  SELECT * FROM employees WHERE salary BETWEEN 60000 AND 80000;
+
+  This translates to: findRangeIterator(60000, 80000)
+
+PSEUDOCODE:
+
+  class BPlusTreeRangeIterator:
+      // State maintained between calls
+      currentLeaf      // pointer to current leaf node
+      currentIndex     // position within current leaf
+      upperBound       // upper bound of range
+
+  function findRangeIterator(lowerBound, upperBound):
+      // Step 1: Navigate from root to leaf containing lowerBound
+      node = root
+      while node is not a leaf:
+          i = 0
+          while i < node.numKeys and lowerBound >= node.key[i]:
+              i = i + 1
+          node = node.pointer[i]
+
+      // Step 2: Find first key >= lowerBound in this leaf
+      i = 0
+      while i < node.numKeys and node.key[i] < lowerBound:
+          i = i + 1
+
+      // Step 3: Create and return iterator
+      iter = new BPlusTreeRangeIterator()
+      iter.currentLeaf = node
+      iter.currentIndex = i
+      iter.upperBound = upperBound
+      return iter
+
+  function next():
+      // End of iteration
+      if currentLeaf is null:
+          return null
+
+      // Move to next leaf if current is exhausted
+      if currentIndex >= currentLeaf.numKeys:
+          currentLeaf = currentLeaf.nextLeafPointer
+          currentIndex = 0
+          if currentLeaf is null:
+              return null
+
+      // Check upper bound
+      if currentLeaf.key[currentIndex] > upperBound:
+          currentLeaf = null    // mark iteration complete
+          return null
+
+      // Return current record and advance
+      result = currentLeaf.record[currentIndex]
+      currentIndex = currentIndex + 1
+      return result
+
+TRACE EXAMPLE — findRangeIterator(7, 17) on the n=4 tree:
+
+  Tree:         [11]
+               /    \
+           [5]      [19, 29]
+          /   \    /   |     \
+      [2,3] [5,7] [11,17] [19,23] [29,31]
+
+  Step 1: Root [11], 7 < 11 -> go left
+  Step 2: Internal [5], 7 >= 5 -> go right
+  Step 3: Leaf [5,7], find first key >= 7 -> index 1 (key=7)
+  Iterator: currentLeaf=[5,7], currentIndex=1, upperBound=17
+
+  next() call 1: key=7 <= 17, return record for 7, advance to index 2
+  next() call 2: index 2 >= numKeys(2), move to next leaf [11,17], index=0
+                  key=11 <= 17, return record for 11, advance to index 1
+  next() call 3: key=17 <= 17, return record for 17, advance to index 2
+  next() call 4: index 2 >= numKeys(2), move to next leaf [19,23], index=0
+                  key=19 > 17, return null. Done!
+
+  Results: records with keys 7, 11, 17
+
+
+Exercise 14.7
+--------------
+Q: What would the occupancy of each leaf node of a B+-tree be if index
+   entries were inserted in sorted order? Explain why.
+
+A: Approximately 50% -- specifically, each leaf (except the rightmost)
+contains exactly ceil((n-1)/2) keys (the minimum).
+
+WHY:
+
+Sorted insertions always go to the RIGHTMOST leaf. When that leaf
+overflows and splits:
+- The left half keeps ceil((n-1)/2) keys
+- The right half gets the rest
+- All future inserts go to the right (since keys are larger)
+- The left half NEVER receives another insert
+
+VISUAL TRACE for n=4 (max 3 keys, min 2):
+
+  Insert 1,2,3: [1,2,3] -- full
+  Insert 4: split -> [1,2] [3,4]
+                       ^^^
+                       stuck at minimum forever!
+  Insert 5: [1,2] [3,4,5] -- full
+  Insert 6: split -> [1,2] [3,4] [5,6]
+                       ^^^   ^^^
+                       both stuck at minimum!
+
+Pattern: every leaf except the rightmost ends up with exactly 2 keys
+out of a maximum of 3 = 67% occupancy (for n=4).
+
+For general n: occupancy = ceil((n-1)/2) / (n-1) ~ 50%
+
+  n    | Min keys | Max keys | Occupancy
+  -----|----------|----------|----------
+  4    | 2        | 3        | 67%
+  10   | 5        | 9        | 56%
+  100  | 50       | 99       | 51%
+  1000 | 500      | 999      | 50.05%
+
+WHY THIS MATTERS: This is the WORST-CASE occupancy for B+-trees, which
+is why bulk loading uses bottom-up construction instead of sequential
+inserts. Bottom-up construction achieves ~100% leaf occupancy.
+
+
+Exercise 14.8
+--------------
+Q: Suppose you have a relation r with n_r tuples on which a secondary
+   B+-tree is to be constructed.
+
+(a) Cost formula for building by inserting one record at a time:
+
+  Assumptions: each leaf block holds f entries, all internal levels
+  are in memory.
+
+  For each of the n_r records:
+  - 1 random read to fetch the target leaf block
+  - 1 random write to write back the modified leaf
+  Total per insert: 2 I/Os
+
+  Total cost = 2 * n_r random I/Os
+
+(b) With 10 million records, 10 ms per random disk access:
+
+  Cost = 2 * 10,000,000 * 10 ms
+       = 200,000,000 ms
+       = 200,000 seconds
+       = 55.6 HOURS
+
+  That is over 2 days just to build one index!
+
+(c) Bottom-up construction pseudocode:
+
+  function buildBTreeBottomUp(relation r, search_key):
+      // Step 1: Sort all entries by search key
+      sorted_entries = sort(r on search_key)
+
+      // Step 2: Create leaf level
+      leaf_nodes = []
+      current_leaf = new LeafNode()
+      for each entry in sorted_entries:
+          if current_leaf is full (n-1 keys):
+              leaf_nodes.append(current_leaf)
+              new_leaf = new LeafNode()
+              current_leaf.nextPointer = new_leaf
+              current_leaf = new_leaf
+          current_leaf.insert(entry)
+      leaf_nodes.append(current_leaf)
+
+      // Step 3: Build internal levels bottom-up
+      current_level = leaf_nodes
+      while current_level.size > 1:
+          parent_level = []
+          current_parent = new InternalNode()
+          for i = 0 to current_level.size - 1:
+              if current_parent is full:
+                  parent_level.append(current_parent)
+                  current_parent = new InternalNode()
+              current_parent.addPointer(current_level[i])
+              if i > 0:
+                  current_parent.addKey(first_key(current_level[i]))
+          parent_level.append(current_parent)
+          current_level = parent_level
+
+      root = current_level[0]
+
+  Cost: O(n_r / f) sequential I/Os. MUCH cheaper than 55.6 hours.
+  With sorting: O(n_r * log(n_r)) total, dominated by the sort.
+
+WHY THIS MATTERS: PostgreSQL's CREATE INDEX uses bottom-up construction,
+not repeated inserts. This is why building an index on a large table
+takes minutes, not days.
+
+
+Exercise 14.9
+--------------
+Q: The leaf nodes of a B+-tree file organization may lose sequentiality
+   after a sequence of inserts.
+
+(a) Explain why sequentiality may be lost:
+
+When a leaf node overflows and splits, the new node is allocated from
+wherever free disk space is available -- typically NOT adjacent.
+
+BEFORE (sequential):
+  Block 100: Leaf 1 [keys 1-10]    -> next
+  Block 101: Leaf 2 [keys 11-20]   -> next
+  Block 102: Leaf 3 [keys 21-30]   -> next
+
+INSERT key 15 causes Leaf 2 to split:
+  Block 100: Leaf 1 [keys 1-10]    -> next
+  Block 101: Leaf 2 [keys 11-15]   -> next
+  Block 500: Leaf 2b [keys 16-20]  -> next   <-- ALLOCATED FAR AWAY!
+  Block 102: Leaf 3 [keys 21-30]   -> next
+
+Range scan now jumps: 100 -> 101 -> 500 -> 102
+                                     ^^^
+                                     RANDOM SEEK (expensive!)
+
+After many splits:
+  Logical:   Leaf1 -> Leaf2 -> Leaf3 -> Leaf4 -> Leaf5
+  Physical:  100      101      500      102      873
+                               ^                 ^
+                           random jumps everywhere
+
+Performance impact for range scan touching 1000 leaf blocks:
+  Sequential: ~5 seconds
+  Fragmented: ~10 seconds (random seeks)
+
+FIX: PostgreSQL REINDEX / CLUSTER commands rewrite leaves sequentially.
+
+(b) Extent-based allocation:
+
+  i.   Worst-case occupancy: ~25% (50% page util * 50% key occupancy)
+  ii.  Leaf nodes within an extent are physically close but may not
+       match logical key order after splits.
+  iii. Seeks: ceil(L*2/n) vs L seeks without extents. Factor of n/2
+       improvement.
+  iv.  Redistribution + extents: fewer splits -> extents stay fuller
+       -> better sequential access.
+
+
+Exercise 14.10
+--------------
+Q: Given a database schema and frequent queries, how would you decide
+   what indices to create?
+
+A: STEP-BY-STEP DECISION FRAMEWORK:
+
+1. ANALYZE THE QUERY WORKLOAD
+
+  -- Query A: Point lookup
+  SELECT * FROM employees WHERE employee_id = 142;
+                                ^^^^^^^^^^^^^^ candidate for index
+
+  -- Query B: Range scan
+  SELECT * FROM employees WHERE salary BETWEEN 50000 AND 80000;
+                                ^^^^^^ candidate for index
+
+  -- Query C: Join
+  SELECT * FROM employees e JOIN departments d ON e.dept_id = d.dept_id;
+                                                  ^^^^^^^^ candidate
+
+  -- Query D: Composite filter
+  SELECT * FROM employees WHERE dept = 'Engineering' AND salary > 90000;
+                                ^^^^                     ^^^^^^
+                                composite index (dept, salary)
+
+  -- Query E: Sort/Group
+  SELECT dept, AVG(salary) FROM employees GROUP BY dept ORDER BY dept;
+                                                   ^^^^ candidate
+
+2. CLASSIFY ACCESS PATTERNS
+
+  Access Pattern                  | Best Index Type
+  --------------------------------|----------------------------
+  Point lookup (WHERE id = X)     | B+-tree or Hash
+  Range scan (WHERE X BETWEEN)    | B+-tree (hash won't work!)
+  Prefix match (LIKE 'Jo%')       | B+-tree
+  Join (ON a.id = b.id)           | B+-tree on join column
+  Sort/Group By                   | B+-tree on sort column
+
+3. CHOOSE THE CLUSTERING INDEX (only one per table)
+  Give it to the most frequent range scan or most critical join.
+
+4. CONSIDER COMPOSITE INDICES
+  Key rule: equality column first, range column second.
+
+  Index on (dept, hire_date) handles:
+    WHERE dept = 'X'                       -- uses prefix
+    WHERE dept = 'X' AND hire_date > ...   -- uses both columns
+  But NOT:
+    WHERE hire_date > ...                  -- can't skip first column
+
+5. WEIGH READ vs WRITE COSTS
+
+  Scenario                                     | Decision
+  ----------------------------------------------|------------------
+  Query runs 10,000x/day, table updated 10x/day | Create the index
+  Query runs 5x/day, table updated 50,000x/day  | Skip the index
+
+6. AVOID REDUNDANCY
+  Index on (A, B, C) already serves as an index on (A) and (A, B).
+  Don't create separate indices for those.
+
+7. CONSIDER COVERING INDICES
+
+  -- This query runs constantly:
+  SELECT dept, COUNT(*) FROM employees GROUP BY dept;
+  -- Index on (dept) covers it entirely -> no heap access needed
+
+PRACTICAL EXAMPLE:
+
+  Query                           | Frequency  | Type
+  --------------------------------|------------|------------------
+  WHERE employee_id = ?           | 10,000/day | Point lookup
+  WHERE dept = ? AND salary > ?   | 5,000/day  | Composite range
+  WHERE hire_date BETWEEN ? AND ? | 200/day    | Range scan
+  INSERT INTO employees ...       | 100/day    | Write
+
+  CREATE: Clustering B+-tree on employee_id (most frequent)
+  CREATE: Secondary composite on (dept, salary) (2nd most frequent)
+  SKIP:   Index on hire_date (only 200/day, not worth it)
+
+
+Exercise 14.11
+--------------
+Q: In write-optimized trees (LSM tree), entries are merged only when a
+   level is full. Suggest how to improve read performance during
+   read-heavy periods.
+
+A: The problem: reads must search EVERY level because a key could be
+anywhere.
+
+  Lookup key = 42:
+    Check Level 0 -> not found
+    Check Level 1, run A -> not found
+    Check Level 1, run B -> not found
+    Check Level 1, run C -> not found
+    Check Level 2 -> not found
+    Check Level 3 -> FOUND
+    Total: 6 searches for 1 lookup!
+
+THE FIX: Merge EAGERLY during read-heavy periods.
+
+  BEFORE (standard policy, 3 levels with multiple runs):
+    Level 0:  [run]
+    Level 1:  [run A] [run B] [run C]   <- 3 runs, not full yet
+    Level 2:  [large run]
+    Level 3:  [larger run]
+    -> Read checks 6 locations
+
+  AFTER (eager merge):
+    Level 3:  [single fully-merged run]
+    -> Read checks 1 location!
+
+Two specific changes:
+1. Merge runs within the same level immediately (even if not full)
+2. Merge across levels (push down even when level isn't full)
+
+TRADEOFF TABLE:
+
+                | Standard Policy         | Eager Merge Policy
+  --------------|-------------------------|-----------------------------
+  Read cost     | O(L * K) per lookup     | O(1) -- single structure
+  Write cost    | Low (merge when full)   | Higher (uses I/O for merges)
+  When to use   | Write-heavy workloads   | Read-heavy periods
+
+ADAPTIVE STRATEGY:
+  if read_rate >> write_rate:
+      merge aggressively in background  // idle I/O bandwidth
+  else:
+      standard lazy merge policy        // optimize for writes
+
+REAL-WORLD: RocksDB/LevelDB do exactly this -- background compaction
+threads that can be tuned based on workload.
+
+
+Exercise 14.12
+--------------
+Q: What trade-offs do buffer trees pose as compared to LSM trees?
+
+A:
+  Feature       | Buffer Trees              | LSM Trees
+  --------------|---------------------------|---------------------------
+  Structure     | Single tree with buffers  | Multiple sorted levels/runs
+  Writes        | Buffer at internal nodes  | Append to in-memory buffer
+  Reads         | Check buffers root->leaf  | Check all levels
+  Read perf     | Better worst-case         | Worse (more levels)
+  Write perf    | Good amortized            | Better (sequential writes)
+  Complexity    | More complex              | Simpler implementation
+  Use in practice| Less common              | Very common (RocksDB etc.)
+
+KEY DIFFERENCE: Buffer trees maintain a single tree structure with
+deferred operations in buffers. LSM trees maintain completely separate
+sorted runs. Buffer trees give better read guarantees but are harder
+to implement efficiently.
+
+
+Exercise 14.13
+--------------
+Q: Consider the instructor relation (Figure 14.1).
+   (a) Construct a bitmap index on salary with four ranges.
+   (b) Answer a query using bitmap operations.
+
+A:
+The instructor relation (12 records, positions 0-11):
+
+  Pos | ID    | Name       | Dept       | Salary
+  ----|-------|------------|------------|-------
+  0   | 10101 | Srinivasan | Comp. Sci. | 65000
+  1   | 12121 | Wu         | Finance    | 90000
+  2   | 15151 | Mozart     | Music      | 40000
+  3   | 22222 | Einstein   | Physics    | 95000
+  4   | 32343 | El Said    | History    | 60000
+  5   | 33456 | Gold       | Physics    | 87000
+  6   | 45565 | Katz       | Comp. Sci. | 75000
+  7   | 58583 | Califieri  | History    | 62000
+  8   | 76543 | Singh      | Finance    | 80000
+  9   | 76766 | Crick      | Biology    | 72000
+  10  | 83821 | Brandt     | Comp. Sci. | 92000
+  11  | 98345 | Kim        | Elec. Eng. | 80000
+
+(a) Salary bitmap (four ranges):
+                                     Positions: 0 1 2 3 4 5 6 7 8 9 10 11
+  Range < 50,000:      (Mozart 40K)             0 0 1 0 0 0 0 0 0 0 0  0
+  Range 50,000-<60,000: (none)                  0 0 0 0 0 0 0 0 0 0 0  0
+  Range 60,000-<70,000: (Srini,ElSaid,Cal)      1 0 0 0 1 0 0 1 0 0 0  0
+  Range >= 70,000:      (8 instructors)         0 1 0 1 0 1 1 0 1 1 1  1
+
+(b) Query: Finance department with salary >= 80,000
+
+  Step 1: Finance bitmap (Wu=pos 1, Singh=pos 8):
+          Finance:    0 1 0 0 0 0 0 0 1 0 0 0
+
+  Step 2: Salary >= 70K bitmap:
+          >= 70K:     0 1 0 1 0 1 1 0 1 1 1 1
+
+  Step 3: AND the bitmaps:
+          0 1 0 0 0 0 0 0 1 0 0 0
+      AND 0 1 0 1 0 1 1 0 1 1 1 1
+        = 0 1 0 0 0 0 0 0 1 0 0 0
+
+  Result: positions 1 and 8
+  - Position 1: Wu, Finance, 90000 (>= 80K YES)
+  - Position 8: Singh, Finance, 80000 (>= 80K YES)
+
+  Note: Since our range is >= 70K (not >= 80K), we might need to
+  fetch and verify. In this case, both qualify.
+
+
+Exercise 14.14
+--------------
+Q: Table with (x,y) coordinates and restaurant names. Queries only ask
+   if there is a restaurant at exactly a given point. R-tree or B-tree?
+
+A: B-tree (or B+-tree) is preferable.
+
+  The query is an EXACT-MATCH (point) query, not spatial:
+
+  -- The only query type:
+  SELECT name FROM restaurants WHERE x = 40.7128 AND y = -74.0060;
+
+  B+-tree on (x, y): O(log n) exact lookup. Simple, efficient.
+  R-tree: Designed for range/nearest-neighbor queries. For exact
+  points, R-tree checks overlapping bounding boxes -- unnecessary
+  overhead when you just need equality.
+
+  Index Type | Point Lookup | Range Query | Nearest Neighbor
+  -----------|--------------|-------------|------------------
+  B+-tree    | O(log n)     | OK (1D)     | No
+  R-tree     | Slower       | Great (2D)  | Great
+  Hash       | O(1) avg     | No          | No
+
+  Since ONLY point lookups are needed, B+-tree wins on simplicity
+  and efficiency. A hash index on (x,y) would also work.
+
+
+Exercise 14.15
+--------------
+Q: Find nearest neighbor using only circular region queries.
+
+A: ALGORITHM (expanding circle search):
+
+  1. Choose initial radius r (small estimate)
+  2. Execute circular region query centered at point Q with radius r
+  3. If no results: double radius (r = 2*r), repeat step 2
+  4. If results found:
+     - d_min = minimum distance to any result found
+     - Execute ONE FINAL query with radius = d_min centered at Q
+     - Nearest neighbor = closest point in final result
+
+WHY THE FINAL QUERY IS CRUCIAL:
+
+  Suppose first successful query (radius r=100m) finds point A at
+  distance 80m. But there might be a closer point B at distance 50m
+  that is OUTSIDE the circle in a different direction:
+
+       A (80m)
+      /
+     Q----B (50m, but outside the first circle's coverage area)
+
+  The final query with radius = 80m guarantees we find ALL points
+  within 80m, including B at 50m.
+
+  Complexity: O(log(D/r_0)) region queries, where D is actual
+  nearest-neighbor distance and r_0 is initial radius.
+
+
+========================================
+EXERCISES (14.16 - 14.26)
+========================================
+
+
+Exercise 14.16
+--------------
+Q: When is it preferable to use a dense index rather than a sparse index?
+
+A: Dense index is preferable when:
+
+1. SECONDARY (NONCLUSTERING) INDEX:
+   Sparse indices REQUIRE the file to be sorted on the search key.
+   A secondary index cannot be sparse because records with intermediate
+   key values could be anywhere in the file.
+
+   -- Cannot use sparse index for:
+   CREATE INDEX idx_salary ON employees(salary);
+   -- employees file is sorted by employee_id, not salary
+
+2. FAST POINT LOOKUPS:
+   Dense index -> direct pointer to record. O(1) after index traversal.
+   Sparse index -> scan from nearest entry through data blocks.
+
+3. INDEX-ONLY SCANS (covering queries):
+   -- This query never needs to read the heap:
+   SELECT COUNT(*) FROM employees WHERE dept = 'Engineering';
+   -- Dense index on dept has an entry for every record -> can count directly
+
+4. NONUNIQUE SEARCH KEYS:
+   Dense index points to ALL matching records.
+   Sparse index may only point to first occurrence.
+
+WHEN SPARSE IS BETTER: Less space needed, file is sorted on search key,
+mainly doing sequential scans or range lookups.
+
+
+Exercise 14.17
+--------------
+Q: What is the difference between a clustering index and a secondary index?
+
+A:
+  Property               | Clustering Index        | Secondary Index
+  -----------------------|------------------------|--------------------
+  Physical order matches | Yes                    | No
+  How many per table     | At most 1              | Many
+  Can be sparse          | Yes                    | No (must be dense)
+  Range scan cost        | Low (sequential I/O)   | High (random I/O)
+  Insert overhead        | May need to shift data | Just update index
+  Also called            | Primary index          | Nonclustering index
+
+CONCRETE PERFORMANCE DIFFERENCE:
+
+  SELECT * FROM employees WHERE salary BETWEEN 60000 AND 80000;
+
+  If salary has a CLUSTERING index:
+  - Records are physically adjacent on disk
+  - ~5 sequential block reads (fast)
+
+  If salary has a SECONDARY index:
+  - Each matching record may be on a different block
+  - Up to 1 random I/O per record (slow)
+  - 1000 matching records = up to 1000 random reads!
+
+
+Exercise 14.18
+--------------
+Q: For each B+-tree of Exercise 14.3, show query steps for:
+   a. Find records with key = 11
+   b. Find records with key between 7 and 17 inclusive
+
+A: Using the n=4 tree:
+
+                    [11]
+                   /    \
+               [5]      [19, 29]
+              /   \    /   |     \
+          [2,3] [5,7] [11,17] [19,23] [29,31]
+
+(a) Find key = 11:
+  Root [11]: 11 >= 11, go RIGHT               -> 1 I/O
+  Internal [19,29]: 11 < 19, go LEFTMOST child -> 1 I/O
+  Leaf [11,17]: key 11 FOUND at position 0     -> 1 I/O
+  Total: 3 node accesses (3 I/Os)
+
+(b) Find keys in [7, 17]:
+  Find 7:
+    Root [11]: 7 < 11, go LEFT                 -> 1 I/O
+    Internal [5]: 7 >= 5, go RIGHT             -> 1 I/O
+    Leaf [5,7]: key 7 found                    -> 1 I/O
+  Scan linked list while key <= 17:
+    Leaf [5,7]: key 7 (included)
+    Next leaf [11,17]: keys 11, 17 (included)  -> 1 I/O
+    Next leaf [19,23]: key 19 > 17, STOP
+  Results: records with keys 7, 11, 17
+  Total: 4 node accesses
+
+
+Exercise 14.19
+--------------
+Q: Adding a uniquifier for nonunique search keys -- effect on tree height?
+
+A: Adding a uniquifier makes each index entry LARGER (original_key +
+uniquifier). This INCREASES tree height because:
+
+  Larger entries -> fewer entries per node -> lower fan-out -> taller tree
+
+EXAMPLE:
+
+  Without uniquifier:
+    Key size: 10 bytes. Pointer: 8 bytes. Page: 8KB.
+    Fan-out = 8192 / (10 + 8) = 455 children per node
+    Height for 10M records: ceil(log_455(10M)) = ceil(2.82) = 3
+
+  With 4-byte uniquifier:
+    Key size: 14 bytes. Pointer: 8 bytes. Page: 8KB.
+    Fan-out = 8192 / (14 + 8) = 372 children per node
+    Height for 10M records: ceil(log_372(10M)) = ceil(2.72) = 3
+
+The effect is usually SMALL (logarithmic), adding at most one level.
+But for massive tables, that one extra level = one extra disk I/O
+per lookup.
+
+
+Exercise 14.20
+--------------
+Q: Relation r(A, B, C) with B+-tree index on search key (A, B).
+
+(a) Worst-case cost for 10 < A < 50:
+  - Traverse tree to first leaf where A > 10: h I/Os
+  - For each matching record, fetch from heap: n1 I/Os (random)
+  - Total: h + n1
+
+(b) Worst-case cost for 10 < A < 50 AND 5 < B < 10:
+  - Same as (a): must fetch ALL n1 records matching A condition
+  - Check B condition on each fetched record
+  - Total: h + n1 (B check doesn't reduce I/O)
+
+(c) When is the index efficient for the combined query?
+  Efficient when n2 (records satisfying both A and B) is a large
+  fraction of n1. If n2 << n1, we fetch many records just to discard
+  them. Better alternatives: index on (B, A), or index on B alone.
+
+
+Exercise 14.21
+--------------
+Q: B+-tree index on names (max 40 chars, avg 10 chars). How does prefix
+   compression maximize fanout of nonleaf nodes?
+
+A: Internal nodes only need SEPARATORS, not full key values.
+
+WITHOUT COMPRESSION:
+  Each key: up to 40 bytes. With 8-byte pointers, 8KB page:
+  Fan-out = 8192 / (40 + 8) = ~170 children per node
+
+WITH PREFIX COMPRESSION:
+  Adjacent subtree keys: "Johnson" and "Smith"
+  Separator only needs: "K" (1 byte -- anything between J and S)
+
+  Average compressed key: ~3 bytes
+  Fan-out = 8192 / (3 + 8) = ~745 children per node
+
+  That is 4.4x improvement in fan-out!
+
+IMPACT ON TREE HEIGHT (for 100 million records):
+  Without: ceil(log_170(100M)) = ceil(3.58) = 4 levels
+  With:    ceil(log_745(100M)) = ceil(2.78) = 3 levels
+
+  One fewer level = one fewer disk I/O per lookup.
+
+
+Exercise 14.22
+--------------
+Q: B+-tree file organization with secondary indices storing physical
+   pointers. What happens on node splits?
+
+(a) Effect of node split on secondary indices:
+  When a leaf splits, ~half the records MOVE to a new disk block.
+  All secondary index entries pointing to moved records become INVALID.
+
+(b) Cost of updating secondary indices:
+  For each moved record (~(n-1)/2 records):
+  - Search each secondary index: O(log N) per index
+  - Update the pointer: 1 I/O
+  With k secondary indices: O(k * (n-1)/2 * log N) I/Os
+
+(c) Logical record identifiers (search key as ID):
+  Instead of physical pointers, secondary indices store the PRIMARY KEY.
+  Lookup: secondary index -> primary key -> primary B+-tree -> record.
+  Node splits DON'T require secondary index updates!
+
+(d) Extra cost: Every secondary lookup needs an ADDITIONAL primary
+  index traversal (h extra I/Os). Tradeoff: higher per-query cost
+  vs. much lower update cost.
+
+  This is how InnoDB (MySQL) works: secondary indices store the
+  primary key, not physical pointers.
+
+
+Exercise 14.23
+--------------
+Q: Write-optimized indices vs B+-tree tradeoffs?
+
+A:
+  Feature        | Write-Optimized (LSM) | B+-Tree
+  ---------------|-----------------------|------------------
+  Write speed    | Fast (sequential I/O) | Slow (random I/O)
+  Read speed     | Slow (check levels)   | Fast (single tree)
+  Space          | Temporary duplicates  | No duplicates
+  Background     | Compaction needed     | No maintenance
+  Best for       | Write-heavy (logs)    | Read-heavy (OLTP)
+
+  SSDs reduce the random I/O penalty of B+-trees, making the
+  choice less clear-cut on modern hardware.
+
+
+Exercise 14.24
+--------------
+Q: Compute an existence bitmap from other bitmaps.
+
+A: For any attribute A, every existing record has either a value or NULL:
+
+  existence = bitmap(A=v1) OR bitmap(A=v2) OR ... OR bitmap(A=NULL)
+
+EXAMPLE with salary ranges:
+  existence = bitmap(<50K) OR bitmap(50-60K) OR bitmap(60-70K)
+              OR bitmap(>=70K) OR bitmap(salary IS NULL)
+
+  = (001000000000) OR (000000000000) OR (100010010000) OR (010101101111)
+  = 111111111111   (all 12 records exist)
+
+If record 2 (Mozart) were deleted, the <50K bitmap becomes 000000000000,
+and existence correctly shows 0 at position 2.
+
+
+Exercise 14.25
+--------------
+Q: Spatial indices for temporal data (valid time intervals). Problem?
+
+A: PROBLEM: Open-ended intervals.
+  A currently-valid record has start time but NO end time.
+  [2024-01-15, infinity) -- how do you index infinity?
+
+  R-trees need BOUNDED bounding boxes. Using a sentinel (year 9999)
+  creates huge bounding boxes that overlap almost every query ->
+  excessive false positives.
+
+SOLUTIONS:
+  1. Sentinel values (9999-12-31) with performance degradation
+  2. Two structures: spatial index for closed intervals + separate
+     B+-tree on start time for open intervals
+  3. Periodic re-indexing with a moving "current time" cutoff
+
+
+Exercise 14.26
+--------------
+Q: How does data encryption affect index schemes?
+
+A: Standard encryption BREAKS ordering:
+  encrypt("Alice") might be 0xF3... while encrypt("Bob") is 0x1A...
+  So encrypt(a) < encrypt(b) does NOT imply a < b.
+
+IMPACT BY QUERY TYPE:
+
+  Query Type     | Standard Encryption | Order-Preserving (OPE)
+  ---------------|--------------------|-----------------------
+  Equality (=)   | Works with         | Works
+                 | deterministic enc. |
+  Range (<, >)   | BROKEN             | Works (weaker security)
+  LIKE prefix    | BROKEN             | Works
+  ORDER BY       | BROKEN             | Works
+
+PRACTICAL APPROACHES:
+  1. TDE (Transparent Data Encryption): Encrypt on disk, decrypt in
+     buffer. Index operates on plaintext in memory. Used by Oracle,
+     SQL Server.
+  2. Deterministic encryption: Same plaintext -> same ciphertext.
+     Allows equality lookups but leaks frequency.
+  3. OPE: Maintains order but weaker security guarantees.
+  4. Searchable encryption: Advanced crypto, currently too slow.
+
+  -- Example: TDE approach
+  -- Data encrypted on disk, decrypted when read into buffer
+  -- B+-tree index works normally on decrypted data in memory
+  -- Protection: physical disk theft, backup theft
+  -- No protection: in-memory attacks, privileged DB access
+
+
+========================================
+END OF CHAPTER 14 SOLUTIONS
+========================================
